@@ -5,6 +5,11 @@ on:
     branches:
       - main
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
 
 jobs:
   build-and-test:
@@ -21,12 +26,84 @@ jobs:
           components: clippy,rustfmt
 
       - name: Format check
-      # Fails if any file is not correctly rustfmt:ad
+        # Fails if any file is not correctly rustfmt:ad
         run: cargo fmt --all -- --check
 
       - name: Clippy (lint)
-      # Treat all clippy warnings as errors
+        # Treat all clippy warnings as errors
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Tests
         run: cargo test --workspace
+
+  auto-approve-and-merge:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'pull_request' &&
+      needs.build-and-test.result == 'success' &&
+      contains(fromJson('["opened","synchronize","reopened","ready_for_review"]'), github.event.action)
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Auto-approve PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+
+            if (pr.state !== 'open') {
+              core.info(`PR #${pr.number} is not open, skipping approval.`);
+              return;
+            }
+
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              event: 'APPROVE',
+              body: 'Automated approval by AI workflow (no human interaction).',
+            });
+
+            core.info(`Approved PR #${pr.number}`);
+
+      - name: Merge PR and delete branch
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+
+            if (pr.merged) {
+              core.info(`PR #${pr.number} already merged, skipping.`);
+              return;
+            }
+
+            // Merga direkt, oavsett CI-status
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              merge_method: 'squash',
+            });
+
+            core.info(`Merged PR #${pr.number}`);
+
+            // Ta bort PR-branchen om den ligger i samma repo
+            const headRef = pr.head.ref;
+            const headRepoOwner = pr.head.repo.owner.login;
+            const thisRepoOwner = context.repo.owner;
+
+            if (headRepoOwner === thisRepoOwner) {
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${headRef}`,
+              });
+              core.info(`Deleted branch ${headRef}`);
+            } else {
+              core.info(`Not deleting branch ${headRef} (different owner: ${headRepoOwner})`);
+            }
