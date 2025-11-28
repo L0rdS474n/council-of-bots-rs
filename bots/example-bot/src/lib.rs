@@ -9,7 +9,7 @@ impl CouncilMember for ExampleBot {
     }
 
     fn vote(&self, ctx: &Context) -> Decision {
-        if ctx.round % 2 == 0 {
+        if ctx.round.is_multiple_of(2) {
             Decision::Approve
         } else {
             Decision::Reject
