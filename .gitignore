@@ -1,0 +1,79 @@
+############################
+# AI agents / assistants
+############################
+
+# Cursor
+.cursor/
+
+# Claude / Anthropic
+.claude/
+claude.json
+claude.config.*
+claude-project.*
+
+# Aider
+.aider*
+aider.conf.*
+aider.config.*
+
+# Continue.dev
+.continue/
+
+# Codeium
+.codeium/
+
+# Sourcegraph Cody
+.cody/
+.sourcegraph/
+
+# Sweep (auto-fix bot)
+.sweep.yaml
+.sweep.yml
+
+# Tabnine
+.tabnine*
+tabnine.*
+
+# Generic AI / MCP / OpenAI-style configs
+ai.config.*
+ai-settings.*
+mcp.config.*
+mcp_settings.*
+mcp-servers.*
+openai.json
+openai.config.*
+agent.config.*
+agent-settings.*
+
+############################
+# Editor / IDE noise
+############################
+
+# VS Code
+.vscode/
+
+# JetBrains (IntelliJ, CLion, Rider, etc.)
+.idea/
+*.iml
+
+# Fleet
+.fleet/
+
+############################
+# Local env / secrets
+############################
+
+.env
+.env.*
+*.local.env
+*.env.local
+
+############################
+# Rust / build artefacts
+############################
+
+/target/
+/**/target/
+
+# Optional: ignore cargo-specific backups
+**/*.rs.bk

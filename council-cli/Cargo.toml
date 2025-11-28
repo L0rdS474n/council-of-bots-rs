@@ -1,0 +1,8 @@
+[package]
+name = "council-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+council-core = { path = "../council-core" }
+example-bot = { path = "../bots/example-bot" }

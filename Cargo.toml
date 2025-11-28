@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "council-core",
+    "council-cli",
+    "bots/example-bot",
+]
+
+resolver = "2"
