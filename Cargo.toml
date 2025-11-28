@@ -3,6 +3,7 @@ members = [
     "council-core",
     "council-cli",
     "bots/example-bot",
+    "bots/first-bot",
 ]
 
 resolver = "2"
