@@ -1,4 +1,4 @@
-use council_core::{CouncilMember, Context, Decision};
+use council_core::{Context, CouncilMember, Decision};
 
 /// A simple example bot that flips decision based on round parity.
 pub struct ExampleBot;

@@ -6,5 +6,5 @@ fn main() {
     let ctx = Context { round: 1 };
     let decision = bot.vote(&ctx);
 
-    println!("{} voted: {:?}", bot.name(), decision);
+    println!("{} voted: {}", bot.name(), decision);
 }
