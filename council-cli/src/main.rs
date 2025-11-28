@@ -1,60 +1,45 @@
-use council_core::{Context, CouncilMember, Decision};
+use council_core::{simulate_rounds, CouncilMember, DecisionTally};
 use cycle_bot::CycleBot;
 use example_bot::ExampleBot;
 use first_bot::FirstBot;
 
-#[derive(Default, Debug, PartialEq, Eq)]
-struct RoundTally {
-    approvals: u32,
-    rejections: u32,
-    abstentions: u32,
-    customs: u32,
-}
-
-impl RoundTally {
-    fn record(&mut self, decision: &Decision) {
-        match decision {
-            Decision::Approve => self.approvals += 1,
-            Decision::Reject => self.rejections += 1,
-            Decision::Abstain => self.abstentions += 1,
-            Decision::Custom(_) => self.customs += 1,
-        }
-    }
-
-    fn describe(&self) -> String {
-        format!(
-            "approve: {}, reject: {}, abstain: {}, custom: {}",
-            self.approvals, self.rejections, self.abstentions, self.customs
-        )
-    }
-}
-
 fn main() {
     let council: Vec<Box<dyn CouncilMember>> =
         vec![Box::new(ExampleBot), Box::new(FirstBot), Box::new(CycleBot)];
+    let borrowed_bots: Vec<&dyn CouncilMember> = council.iter().map(|bot| bot.as_ref()).collect();
 
-    for round in 1..=5 {
-        let ctx = Context { round };
-        let mut tally = RoundTally::default();
+    let report = simulate_rounds(&borrowed_bots, 5);
 
-        println!("\n-- Round {} --", round);
-        for bot in &council {
-            let decision = bot.vote(&ctx);
-            tally.record(&decision);
-            println!("{} voted: {}", bot.name(), decision);
+    for round in &report.rounds {
+        println!("\n-- Round {} --", round.round);
+        for (name, decision) in &round.votes {
+            println!("{} voted: {}", name, decision);
         }
-
-        println!("Round {} tally: {}", round, tally.describe());
+        println!("Round {} tally: {}", round.round, round.tally.describe());
     }
+
+    println!("\n== Summary after {} rounds ==", report.rounds.len());
+    println!("Cumulative: {}", report.cumulative_tally.describe());
+    for bot in &report.bot_summaries {
+        println!("{} totals -> {}", bot.name, format_bot_totals(&bot.tally));
+    }
+}
+
+fn format_bot_totals(tally: &DecisionTally) -> String {
+    format!(
+        "approve: {}, reject: {}, abstain: {}, custom: {}",
+        tally.approvals, tally.rejections, tally.abstentions, tally.customs
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use council_core::Decision;
 
     #[test]
     fn tally_counts_all_decisions() {
-        let mut tally = RoundTally::default();
+        let mut tally = DecisionTally::default();
         let decisions = [
             Decision::Approve,
             Decision::Reject,
@@ -68,7 +53,7 @@ mod tests {
 
         assert_eq!(
             tally,
-            RoundTally {
+            DecisionTally {
                 approvals: 1,
                 rejections: 1,
                 abstentions: 1,
@@ -77,5 +62,26 @@ mod tests {
         );
         assert!(tally.describe().contains("approve: 1"));
         assert!(tally.describe().contains("custom: 1"));
+    }
+
+    #[test]
+    fn simulates_rounds_and_builds_summary() {
+        let council: Vec<Box<dyn CouncilMember>> =
+            vec![Box::new(ExampleBot), Box::new(FirstBot), Box::new(CycleBot)];
+        let borrowed_bots: Vec<&dyn CouncilMember> =
+            council.iter().map(|bot| bot.as_ref()).collect();
+
+        let report = simulate_rounds(&borrowed_bots, 2);
+
+        assert_eq!(report.rounds.len(), 2);
+        assert_eq!(report.cumulative_tally.approvals, 4);
+
+        let example_bot_summary = report
+            .bot_summaries
+            .iter()
+            .find(|summary| summary.name == "example-bot")
+            .unwrap();
+        assert_eq!(example_bot_summary.tally.approvals, 1);
+        assert_eq!(example_bot_summary.tally.rejections, 1);
     }
 }
