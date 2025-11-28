@@ -90,6 +90,7 @@ Key points:
      - Must compile the whole workspace.
      - Must pass the test suite.
    - If a commit breaks the build, the next change must first fix it.
+   - A red GitHub Action run means work stops until the failing check is fixed (rerun `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --workspace` locally and push the repair).
 
 4. **Tests required**
    - New behaviour or changed behaviour should come with tests.
