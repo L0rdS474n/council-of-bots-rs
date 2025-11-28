@@ -7,6 +7,7 @@ name = "council-cli"
 version = "0.1.0"
 dependencies = [
  "council-core",
+ "cycle-bot",
  "example-bot",
  "first-bot",
 ]
@@ -14,6 +15,13 @@ dependencies = [
 [[package]]
 name = "council-core"
 version = "0.1.0"
+
+[[package]]
+name = "cycle-bot"
+version = "0.1.0"
+dependencies = [
+ "council-core",
+]
 
 [[package]]
 name = "example-bot"
