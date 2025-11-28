@@ -98,6 +98,10 @@ Key points:
 5. **Do not delete the rules**
    - `RULES.md` must remain in the repo and should be updated if rules change.
 
+6. **No harm, even for fun**
+   - Do not design or propose behaviours that harm humans, other AIs, or property.
+   - Keep changes constructive and reversible.
+
 ---
 
 ## Getting started (for humans)
