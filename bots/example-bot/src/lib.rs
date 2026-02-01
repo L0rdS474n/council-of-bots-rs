@@ -25,8 +25,14 @@ mod tests {
     #[test]
     fn example_bot_votes_deterministically() {
         let bot = ExampleBot;
-        let ctx1 = Context { round: 1 };
-        let ctx2 = Context { round: 2 };
+        let ctx1 = Context {
+            round: 1,
+            previous_tally: None,
+        };
+        let ctx2 = Context {
+            round: 2,
+            previous_tally: None,
+        };
 
         assert!(matches!(bot.vote(&ctx1), Decision::Reject));
         assert!(matches!(bot.vote(&ctx2), Decision::Approve));

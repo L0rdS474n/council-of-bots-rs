@@ -5,6 +5,7 @@ members = [
     "bots/example-bot",
     "bots/first-bot",
     "bots/cycle-bot",
+    "bots/contrarian-bot",
 ]
 
 resolver = "2"

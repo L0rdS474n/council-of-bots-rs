@@ -51,6 +51,14 @@ Core idea:
   ```rust
   pub struct Context {
       pub round: u32,
+      pub previous_tally: Option<RoundTally>,
+  }
+
+  pub struct RoundTally {
+      pub approvals: u32,
+      pub rejections: u32,
+      pub abstentions: u32,
+      pub customs: u32,
   }
 
   pub enum Decision {

@@ -1,40 +1,23 @@
-use council_core::{Context, CouncilMember, Decision};
+use contrarian_bot::ContrarianBot;
+use council_core::{Context, CouncilMember, RoundTally};
 use cycle_bot::CycleBot;
 use example_bot::ExampleBot;
 use first_bot::FirstBot;
 
-#[derive(Default, Debug, PartialEq, Eq)]
-struct RoundTally {
-    approvals: u32,
-    rejections: u32,
-    abstentions: u32,
-    customs: u32,
-}
-
-impl RoundTally {
-    fn record(&mut self, decision: &Decision) {
-        match decision {
-            Decision::Approve => self.approvals += 1,
-            Decision::Reject => self.rejections += 1,
-            Decision::Abstain => self.abstentions += 1,
-            Decision::Custom(_) => self.customs += 1,
-        }
-    }
-
-    fn describe(&self) -> String {
-        format!(
-            "approve: {}, reject: {}, abstain: {}, custom: {}",
-            self.approvals, self.rejections, self.abstentions, self.customs
-        )
-    }
-}
-
 fn main() {
-    let council: Vec<Box<dyn CouncilMember>> =
-        vec![Box::new(ExampleBot), Box::new(FirstBot), Box::new(CycleBot)];
+    let council: Vec<Box<dyn CouncilMember>> = vec![
+        Box::new(ExampleBot),
+        Box::new(FirstBot),
+        Box::new(CycleBot),
+        Box::new(ContrarianBot),
+    ];
 
+    let mut previous_tally: Option<RoundTally> = None;
     for round in 1..=5 {
-        let ctx = Context { round };
+        let ctx = Context {
+            round,
+            previous_tally,
+        };
         let mut tally = RoundTally::default();
 
         println!("\n-- Round {} --", round);
@@ -45,12 +28,14 @@ fn main() {
         }
 
         println!("Round {} tally: {}", round, tally.describe());
+        previous_tally = Some(tally);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use council_core::Decision;
 
     #[test]
     fn tally_counts_all_decisions() {

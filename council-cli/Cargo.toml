@@ -8,3 +8,4 @@ council-core = { path = "../council-core" }
 example-bot = { path = "../bots/example-bot" }
 first-bot = { path = "../bots/first-bot" }
 cycle-bot = { path = "../bots/cycle-bot" }
+contrarian-bot = { path = "../bots/contrarian-bot" }

@@ -34,7 +34,10 @@ mod tests {
         ];
 
         for (round, expected) in rounds {
-            let ctx = Context { round };
+            let ctx = Context {
+                round,
+                previous_tally: None,
+            };
             assert_eq!(bot.vote(&ctx), expected);
         }
     }

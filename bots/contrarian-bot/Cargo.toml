@@ -1,0 +1,7 @@
+[package]
+name = "contrarian-bot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+council-core = { path = "../../council-core" }

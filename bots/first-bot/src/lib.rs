@@ -28,7 +28,10 @@ mod tests {
     fn approves_initial_rounds() {
         let bot = FirstBot;
         for round in 1..=3 {
-            let ctx = Context { round };
+            let ctx = Context {
+                round,
+                previous_tally: None,
+            };
             assert_eq!(bot.vote(&ctx), Decision::Approve);
         }
     }
@@ -36,7 +39,10 @@ mod tests {
     #[test]
     fn abstains_after_initial_push() {
         let bot = FirstBot;
-        let ctx = Context { round: 4 };
+        let ctx = Context {
+            round: 4,
+            previous_tally: None,
+        };
         assert_eq!(bot.vote(&ctx), Decision::Abstain);
     }
 }
