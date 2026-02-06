@@ -1,3 +1,6 @@
+use council_core::event::Event;
+use council_core::explorer::GalacticCouncilMember;
+use council_core::galaxy::GalaxyState;
 use council_core::{Context, CouncilMember, Decision, DominantOutcome};
 
 /// ContrarianBot reacts to the council's previous round by opposing the majority.
@@ -22,6 +25,23 @@ impl CouncilMember for ContrarianBot {
     }
 }
 
+impl GalacticCouncilMember for ContrarianBot {
+    fn name(&self) -> &'static str {
+        "contrarian-bot"
+    }
+
+    fn expertise(&self) -> &[(&'static str, f32)] {
+        &[("military", 0.8), ("strategy", 0.6)]
+    }
+
+    /// Always picks the last available option — the contrarian choice.
+    /// Most event templates put the cautious/avoidant option last, so
+    /// contrarian-bot creates tension by consistently going against the grain.
+    fn vote(&self, event: &Event, _galaxy: &GalaxyState) -> usize {
+        event.options.len().saturating_sub(1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,7 +61,7 @@ mod tests {
             round: 1,
             previous_tally: None,
         };
-        assert_eq!(bot.vote(&ctx), Decision::Abstain);
+        assert_eq!(CouncilMember::vote(&bot, &ctx), Decision::Abstain);
     }
 
     #[test]
@@ -53,7 +73,7 @@ mod tests {
             abstentions: 0,
             customs: 0,
         });
-        assert_eq!(bot.vote(&ctx), Decision::Reject);
+        assert_eq!(CouncilMember::vote(&bot, &ctx), Decision::Reject);
     }
 
     #[test]
@@ -65,7 +85,7 @@ mod tests {
             abstentions: 1,
             customs: 0,
         });
-        assert_eq!(bot.vote(&ctx), Decision::Approve);
+        assert_eq!(CouncilMember::vote(&bot, &ctx), Decision::Approve);
     }
 
     #[test]
@@ -77,7 +97,10 @@ mod tests {
             abstentions: 5,
             customs: 0,
         });
-        assert_eq!(bot.vote(&ctx), Decision::Custom("wildcard"));
+        assert_eq!(
+            CouncilMember::vote(&bot, &ctx),
+            Decision::Custom("wildcard")
+        );
     }
 
     #[test]
@@ -89,7 +112,7 @@ mod tests {
             abstentions: 0,
             customs: 4,
         });
-        assert_eq!(bot.vote(&ctx), Decision::Reject);
+        assert_eq!(CouncilMember::vote(&bot, &ctx), Decision::Reject);
     }
 
     #[test]
@@ -101,6 +124,6 @@ mod tests {
             abstentions: 0,
             customs: 0,
         });
-        assert_eq!(bot.vote(&ctx), Decision::Abstain);
+        assert_eq!(CouncilMember::vote(&bot, &ctx), Decision::Abstain);
     }
 }

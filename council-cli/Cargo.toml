@@ -9,3 +9,5 @@ example-bot = { path = "../bots/example-bot" }
 first-bot = { path = "../bots/first-bot" }
 cycle-bot = { path = "../bots/cycle-bot" }
 contrarian-bot = { path = "../bots/contrarian-bot" }
+oracle-bot = { path = "../bots/oracle-bot" }
+rand = "0.8"

@@ -1,3 +1,6 @@
+use council_core::event::Event;
+use council_core::explorer::GalacticCouncilMember;
+use council_core::galaxy::GalaxyState;
 use council_core::{Context, CouncilMember, Decision};
 
 /// FirstBot takes a simple optimistic stance: it approves early rounds
@@ -19,6 +22,26 @@ impl CouncilMember for FirstBot {
     }
 }
 
+impl GalacticCouncilMember for FirstBot {
+    fn name(&self) -> &'static str {
+        "first-bot"
+    }
+
+    fn expertise(&self) -> &[(&'static str, f32)] {
+        &[("exploration", 0.8), ("science", 0.5)]
+    }
+
+    /// Optimistic explorer: always picks the boldest option (index 0) in the
+    /// first 10 rounds, then switches to cautious (last option) later.
+    fn vote(&self, event: &Event, galaxy: &GalaxyState) -> usize {
+        if galaxy.round <= 10 {
+            0
+        } else {
+            event.options.len().saturating_sub(1)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -32,7 +55,7 @@ mod tests {
                 round,
                 previous_tally: None,
             };
-            assert_eq!(bot.vote(&ctx), Decision::Approve);
+            assert_eq!(CouncilMember::vote(&bot, &ctx), Decision::Approve);
         }
     }
 
@@ -43,6 +66,6 @@ mod tests {
             round: 4,
             previous_tally: None,
         };
-        assert_eq!(bot.vote(&ctx), Decision::Abstain);
+        assert_eq!(CouncilMember::vote(&bot, &ctx), Decision::Abstain);
     }
 }

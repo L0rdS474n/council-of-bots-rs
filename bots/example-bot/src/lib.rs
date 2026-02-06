@@ -1,3 +1,6 @@
+use council_core::event::Event;
+use council_core::explorer::GalacticCouncilMember;
+use council_core::galaxy::GalaxyState;
 use council_core::{Context, CouncilMember, Decision};
 
 /// A simple example bot that flips decision based on round parity.
@@ -14,6 +17,22 @@ impl CouncilMember for ExampleBot {
         } else {
             Decision::Reject
         }
+    }
+}
+
+impl GalacticCouncilMember for ExampleBot {
+    fn name(&self) -> &'static str {
+        "example-bot"
+    }
+
+    fn expertise(&self) -> &[(&'static str, f32)] {
+        &[("engineering", 0.6), ("science", 0.4)]
+    }
+
+    /// Alternates between first and second option each round.
+    fn vote(&self, event: &Event, galaxy: &GalaxyState) -> usize {
+        let pick = if galaxy.round.is_multiple_of(2) { 0 } else { 1 };
+        pick.min(event.options.len().saturating_sub(1))
     }
 }
 
@@ -34,7 +53,10 @@ mod tests {
             previous_tally: None,
         };
 
-        assert!(matches!(bot.vote(&ctx1), Decision::Reject));
-        assert!(matches!(bot.vote(&ctx2), Decision::Approve));
+        assert!(matches!(CouncilMember::vote(&bot, &ctx1), Decision::Reject));
+        assert!(matches!(
+            CouncilMember::vote(&bot, &ctx2),
+            Decision::Approve
+        ));
     }
 }

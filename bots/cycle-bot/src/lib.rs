@@ -1,3 +1,6 @@
+use council_core::event::Event;
+use council_core::explorer::GalacticCouncilMember;
+use council_core::galaxy::GalaxyState;
 use council_core::{Context, CouncilMember, Decision};
 
 /// CycleBot rotates its stance every round to encourage variety in the council.
@@ -15,6 +18,25 @@ impl CouncilMember for CycleBot {
             2 => Decision::Reject,
             _ => Decision::Abstain,
         }
+    }
+}
+
+impl GalacticCouncilMember for CycleBot {
+    fn name(&self) -> &'static str {
+        "cycle-bot"
+    }
+
+    fn expertise(&self) -> &[(&'static str, f32)] {
+        &[("culture", 0.7), ("linguistics", 0.5), ("archaeology", 0.3)]
+    }
+
+    /// Cycles through available options based on round number.
+    fn vote(&self, event: &Event, galaxy: &GalaxyState) -> usize {
+        let num = event.options.len();
+        if num == 0 {
+            return 0;
+        }
+        (galaxy.round as usize) % num
     }
 }
 
@@ -38,7 +60,7 @@ mod tests {
                 round,
                 previous_tally: None,
             };
-            assert_eq!(bot.vote(&ctx), expected);
+            assert_eq!(CouncilMember::vote(&bot, &ctx), expected);
         }
     }
 }

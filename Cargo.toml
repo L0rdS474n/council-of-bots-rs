@@ -6,6 +6,7 @@ members = [
     "bots/first-bot",
     "bots/cycle-bot",
     "bots/contrarian-bot",
+    "bots/oracle-bot",
 ]
 
 resolver = "2"
