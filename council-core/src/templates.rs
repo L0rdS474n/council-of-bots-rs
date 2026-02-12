@@ -39,6 +39,16 @@ mod names {
         "Medical Breakthrough",
         "Weapons System",
     ];
+    pub const RESEARCH_DISCOVERIES: &[&str] = &[
+        "Quantum Entanglement Drive",
+        "Subspace Field Theory",
+        "Graviton Lens Array",
+        "Chrono-Spatial Mapping",
+        "Plasma Containment Matrix",
+        "Bio-Neural Computing",
+        "Dark Energy Harvesting",
+        "Dimensional Fold Navigation",
+    ];
 }
 
 fn random_sector_name(rng: &mut dyn RngCore) -> String {
@@ -51,6 +61,32 @@ fn random_species_name(rng: &mut dyn RngCore) -> String {
     let prefix = names::SPECIES_PREFIXES[rng.next_u32() as usize % names::SPECIES_PREFIXES.len()];
     let suffix = names::SPECIES_SUFFIXES[rng.next_u32() as usize % names::SPECIES_SUFFIXES.len()];
     format!("{}{}", prefix, suffix)
+}
+
+/// Improve a relation by one step (Unknown -> Wary -> Neutral -> Friendly -> Allied).
+fn improve_relation(current: Relation) -> Relation {
+    match current {
+        Relation::Hostile => Relation::Wary,
+        Relation::Unknown | Relation::Wary => Relation::Neutral,
+        Relation::Neutral => Relation::Friendly,
+        Relation::Friendly | Relation::Allied => Relation::Allied,
+    }
+}
+
+/// Degrade a relation by one step (Allied -> Friendly -> Neutral -> Wary -> Hostile).
+fn degrade_relation(current: Relation) -> Relation {
+    match current {
+        Relation::Allied => Relation::Friendly,
+        Relation::Friendly => Relation::Neutral,
+        Relation::Neutral => Relation::Wary,
+        Relation::Wary | Relation::Unknown => Relation::Hostile,
+        Relation::Hostile => Relation::Hostile,
+    }
+}
+
+/// Improve a relation by two steps.
+fn greatly_improve_relation(current: Relation) -> Relation {
+    improve_relation(improve_relation(current))
 }
 
 // ============================================================================
@@ -482,6 +518,178 @@ impl EventTemplate for ArtifactTemplate {
     }
 }
 
+// ============================================================================
+// Diplomacy Templates
+// ============================================================================
+
+/// A known species requests diplomatic engagement.
+pub struct DiplomaticRequestTemplate;
+
+impl EventTemplate for DiplomaticRequestTemplate {
+    fn name(&self) -> &'static str {
+        "Diplomatic Request"
+    }
+
+    fn is_applicable(&self, galaxy: &GalaxyState) -> bool {
+        !galaxy.known_species.is_empty()
+    }
+
+    fn weight(&self) -> u32 {
+        9
+    }
+
+    fn generate(&self, galaxy: &GalaxyState, rng: &mut dyn RngCore) -> Event {
+        let species_idx = rng.next_u32() as usize % galaxy.known_species.len();
+        let species_name = &galaxy.known_species[species_idx].name;
+        let current_relation = galaxy
+            .relations
+            .get(species_name)
+            .copied()
+            .unwrap_or(Relation::Unknown);
+
+        let generous_relation = greatly_improve_relation(current_relation);
+        let negotiate_relation = improve_relation(current_relation);
+        let decline_relation = degrade_relation(current_relation);
+
+        Event {
+            description: format!(
+                "The {} have sent an envoy requesting a formal diplomatic summit. \
+                They wish to discuss trade agreements and cultural exchange. \
+                Current relations are {:?}.",
+                species_name, current_relation
+            ),
+            relevant_expertise: vec![
+                ("diplomacy".to_string(), 0.5),
+                ("culture".to_string(), 0.3),
+                ("strategy".to_string(), 0.2),
+            ],
+            options: vec![
+                ResponseOption {
+                    description: "Accept generously — offer trade and cultural exchange"
+                        .to_string(),
+                    outcome: Outcome {
+                        description: format!(
+                            "The {} are delighted by our generosity. Relations improve significantly!",
+                            species_name
+                        ),
+                        score_delta: 12,
+                        state_changes: vec![StateChange::SetRelation {
+                            species: species_name.clone(),
+                            relation: generous_relation,
+                        }],
+                    },
+                },
+                ResponseOption {
+                    description: "Negotiate cautiously — seek mutual benefit".to_string(),
+                    outcome: Outcome {
+                        description: format!(
+                            "Careful negotiations with the {} yield a modest agreement.",
+                            species_name
+                        ),
+                        score_delta: 5,
+                        state_changes: vec![StateChange::SetRelation {
+                            species: species_name.clone(),
+                            relation: negotiate_relation,
+                        }],
+                    },
+                },
+                ResponseOption {
+                    description: "Decline the summit — we have other priorities".to_string(),
+                    outcome: Outcome {
+                        description: format!(
+                            "The {} are offended by our refusal. Relations deteriorate.",
+                            species_name
+                        ),
+                        score_delta: -2,
+                        state_changes: vec![StateChange::SetRelation {
+                            species: species_name.clone(),
+                            relation: decline_relation,
+                        }],
+                    },
+                },
+            ],
+        }
+    }
+}
+
+// ============================================================================
+// Research Templates
+// ============================================================================
+
+/// A technological breakthrough becomes possible after accumulating discoveries.
+pub struct TechBreakthroughTemplate;
+
+impl EventTemplate for TechBreakthroughTemplate {
+    fn name(&self) -> &'static str {
+        "Tech Breakthrough"
+    }
+
+    fn is_applicable(&self, galaxy: &GalaxyState) -> bool {
+        galaxy.discoveries.len() >= 3
+    }
+
+    fn weight(&self) -> u32 {
+        7
+    }
+
+    fn generate(&self, _galaxy: &GalaxyState, rng: &mut dyn RngCore) -> Event {
+        let discovery_name = names::RESEARCH_DISCOVERIES
+            [rng.next_u32() as usize % names::RESEARCH_DISCOVERIES.len()];
+
+        Event {
+            description: format!(
+                "Our scientists report that recent discoveries have opened a path to \
+                a major breakthrough: {}. Significant resources would be required to pursue it.",
+                discovery_name
+            ),
+            relevant_expertise: vec![
+                ("science".to_string(), 0.5),
+                ("engineering".to_string(), 0.3),
+                ("exploration".to_string(), 0.2),
+            ],
+            options: vec![
+                ResponseOption {
+                    description: "Full investment — redirect all research capacity".to_string(),
+                    outcome: Outcome {
+                        description: format!(
+                            "Massive investment pays off! {} is achieved, revolutionizing our capabilities.",
+                            discovery_name
+                        ),
+                        score_delta: 18,
+                        state_changes: vec![StateChange::AddDiscovery(Discovery {
+                            name: discovery_name.to_string(),
+                            category: "research".to_string(),
+                        })],
+                    },
+                },
+                ResponseOption {
+                    description: "Methodical research — steady progress over time".to_string(),
+                    outcome: Outcome {
+                        description: format!(
+                            "Patient research yields results. {} is added to our knowledge base.",
+                            discovery_name
+                        ),
+                        score_delta: 8,
+                        state_changes: vec![StateChange::AddDiscovery(Discovery {
+                            name: discovery_name.to_string(),
+                            category: "research".to_string(),
+                        })],
+                    },
+                },
+                ResponseOption {
+                    description: "Archive the findings for later".to_string(),
+                    outcome: Outcome {
+                        description: "The research notes are filed away. Perhaps we'll revisit them."
+                            .to_string(),
+                        score_delta: 2,
+                        state_changes: vec![],
+                    },
+                },
+            ],
+        }
+    }
+}
+
 /// Collect all built-in templates.
 pub fn default_templates() -> Vec<Box<dyn EventTemplate>> {
     vec![
@@ -490,6 +698,8 @@ pub fn default_templates() -> Vec<Box<dyn EventTemplate>> {
         Box::new(FirstContactTemplate),
         Box::new(ThreatEmergenceTemplate),
         Box::new(ArtifactTemplate),
+        Box::new(DiplomaticRequestTemplate),
+        Box::new(TechBreakthroughTemplate),
     ]
 }
 
@@ -598,5 +808,183 @@ mod tests {
         }
 
         assert!(!template.is_applicable(&galaxy));
+    }
+
+    // ====================================================================
+    // Relation helper tests
+    // ====================================================================
+
+    #[test]
+    fn improve_relation_steps_up() {
+        assert_eq!(improve_relation(Relation::Hostile), Relation::Wary);
+        assert_eq!(improve_relation(Relation::Unknown), Relation::Neutral);
+        assert_eq!(improve_relation(Relation::Wary), Relation::Neutral);
+        assert_eq!(improve_relation(Relation::Neutral), Relation::Friendly);
+        assert_eq!(improve_relation(Relation::Friendly), Relation::Allied);
+        assert_eq!(improve_relation(Relation::Allied), Relation::Allied);
+    }
+
+    #[test]
+    fn degrade_relation_steps_down() {
+        assert_eq!(degrade_relation(Relation::Allied), Relation::Friendly);
+        assert_eq!(degrade_relation(Relation::Friendly), Relation::Neutral);
+        assert_eq!(degrade_relation(Relation::Neutral), Relation::Wary);
+        assert_eq!(degrade_relation(Relation::Wary), Relation::Hostile);
+        assert_eq!(degrade_relation(Relation::Unknown), Relation::Hostile);
+        assert_eq!(degrade_relation(Relation::Hostile), Relation::Hostile);
+    }
+
+    #[test]
+    fn greatly_improve_moves_two_steps() {
+        assert_eq!(
+            greatly_improve_relation(Relation::Hostile),
+            Relation::Neutral
+        );
+        assert_eq!(
+            greatly_improve_relation(Relation::Unknown),
+            Relation::Friendly
+        );
+        assert_eq!(
+            greatly_improve_relation(Relation::Neutral),
+            Relation::Allied
+        );
+        assert_eq!(
+            greatly_improve_relation(Relation::Friendly),
+            Relation::Allied
+        );
+    }
+
+    // ====================================================================
+    // DiplomaticRequestTemplate tests
+    // ====================================================================
+
+    #[test]
+    fn diplomatic_request_applicable_with_species() {
+        let template = DiplomaticRequestTemplate;
+        let mut galaxy = GalaxyState::new();
+
+        assert!(!template.is_applicable(&galaxy));
+
+        galaxy.known_species.push(Species {
+            name: "Zorblax".to_string(),
+            traits: vec!["peaceful".to_string()],
+        });
+        galaxy
+            .relations
+            .insert("Zorblax".to_string(), Relation::Neutral);
+
+        assert!(template.is_applicable(&galaxy));
+    }
+
+    #[test]
+    fn diplomatic_request_has_correct_weight() {
+        let template = DiplomaticRequestTemplate;
+        assert_eq!(template.weight(), 9);
+    }
+
+    #[test]
+    fn diplomatic_request_generates_three_options_with_set_relation() {
+        let template = DiplomaticRequestTemplate;
+        let mut galaxy = GalaxyState::new();
+        galaxy.known_species.push(Species {
+            name: "Xanuri".to_string(),
+            traits: vec!["curious".to_string()],
+        });
+        galaxy
+            .relations
+            .insert("Xanuri".to_string(), Relation::Neutral);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(99);
+
+        let event = template.generate(&galaxy, &mut rng);
+        assert_eq!(event.options.len(), 3);
+
+        // Every option should contain a SetRelation state change
+        for option in &event.options {
+            let has_set_relation = option
+                .outcome
+                .state_changes
+                .iter()
+                .any(|c| matches!(c, StateChange::SetRelation { .. }));
+            assert!(
+                has_set_relation,
+                "Option '{}' missing SetRelation change",
+                option.description
+            );
+        }
+    }
+
+    // ====================================================================
+    // TechBreakthroughTemplate tests
+    // ====================================================================
+
+    #[test]
+    fn tech_breakthrough_applicable_with_enough_discoveries() {
+        let template = TechBreakthroughTemplate;
+        let mut galaxy = GalaxyState::new();
+
+        assert!(!template.is_applicable(&galaxy));
+
+        // Add 2 — still not enough
+        for i in 0..2 {
+            galaxy.discoveries.push(Discovery {
+                name: format!("Discovery {}", i),
+                category: "science".to_string(),
+            });
+        }
+        assert!(!template.is_applicable(&galaxy));
+
+        // Add third — now applicable
+        galaxy.discoveries.push(Discovery {
+            name: "Discovery 2".to_string(),
+            category: "science".to_string(),
+        });
+        assert!(template.is_applicable(&galaxy));
+    }
+
+    #[test]
+    fn tech_breakthrough_has_correct_weight() {
+        let template = TechBreakthroughTemplate;
+        assert_eq!(template.weight(), 7);
+    }
+
+    #[test]
+    fn tech_breakthrough_first_two_options_add_discovery() {
+        let template = TechBreakthroughTemplate;
+        let mut galaxy = GalaxyState::new();
+        for i in 0..3 {
+            galaxy.discoveries.push(Discovery {
+                name: format!("Discovery {}", i),
+                category: "science".to_string(),
+            });
+        }
+        let mut rng = rand::rngs::StdRng::seed_from_u64(77);
+
+        let event = template.generate(&galaxy, &mut rng);
+        assert_eq!(event.options.len(), 3);
+
+        // Options 0 and 1 should have AddDiscovery
+        for idx in 0..2 {
+            let has_discovery = event.options[idx]
+                .outcome
+                .state_changes
+                .iter()
+                .any(|c| matches!(c, StateChange::AddDiscovery(_)));
+            assert!(has_discovery, "Option {} should add a discovery", idx);
+        }
+
+        // Option 2 (archive) should have no state changes
+        assert!(
+            event.options[2].outcome.state_changes.is_empty(),
+            "Archive option should have no state changes"
+        );
+    }
+
+    #[test]
+    fn default_templates_includes_new_templates() {
+        let templates = default_templates();
+        let names: Vec<&str> = templates.iter().map(|t| t.name()).collect();
+        assert!(names.contains(&"Diplomatic Request"));
+        assert!(names.contains(&"Tech Breakthrough"));
+        assert_eq!(templates.len(), 7);
     }
 }

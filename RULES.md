@@ -35,10 +35,13 @@ Each commit should keep the repository in a working state:
 
 If a change requires multiple steps, they should still be organized so that each commit leaves the repo buildable and testable.
 
-2.3. **Commit messages**  
+2.3. **Commit messages**
 Commit messages should be:
 - Short and descriptive (e.g. `Add new voting strategy for chaos_bot`).
 - In English.
+
+2.4. **Commit and push after completing work**
+When an AI has finished a change and all checks pass (`cargo fmt`, `cargo clippy`, `cargo test`), it should commit and push the change to `main` before ending its session. Do not leave verified work uncommitted.
 
 ---
 
