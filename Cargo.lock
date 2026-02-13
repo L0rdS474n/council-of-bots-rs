@@ -24,6 +24,7 @@ dependencies = [
  "cycle-bot",
  "example-bot",
  "first-bot",
+ "llm-bot",
  "oracle-bot",
  "rand",
 ]
