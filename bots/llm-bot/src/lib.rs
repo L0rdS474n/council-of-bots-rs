@@ -1,18 +1,31 @@
 use council_core::event::Event;
 use council_core::explorer::GalacticCouncilMember;
 use council_core::galaxy::GalaxyState;
-use council_core::ollama::{build_galactic_prompt, ollama_choose, OllamaConfig};
+use council_core::ollama::{
+    build_deliberation_prompt, build_galactic_prompt, extract_choice, extract_comment,
+    ollama_choose, ollama_generate, OllamaConfig,
+};
 
 const PERSONALITY: &str = "You are an AI agent with broad knowledge across all domains. You analyze situations rationally and make balanced decisions.";
 
 #[derive(Debug, Clone)]
 pub struct LlmBot {
+    name: &'static str,
     config: OllamaConfig,
 }
 
 impl LlmBot {
     pub fn new(host: impl Into<String>, model: impl Into<String>) -> Self {
+        Self::new_named("llm-bot", host, model)
+    }
+
+    pub fn new_named(
+        name: &'static str,
+        host: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
         Self {
+            name,
             config: OllamaConfig {
                 host: host.into(),
                 model: model.into(),
@@ -30,7 +43,7 @@ fn fallback_choice(round: u32, num_options: usize) -> usize {
 
 impl GalacticCouncilMember for LlmBot {
     fn name(&self) -> &'static str {
-        "llm-bot"
+        self.name
     }
 
     fn expertise(&self) -> &[(&'static str, f32)] {
@@ -56,10 +69,18 @@ impl GalacticCouncilMember for LlmBot {
         ) {
             Ok(choice) => choice,
             Err(e) => {
-                eprintln!("[llm-bot] LLM failed ({}), using fallback", e);
+                eprintln!("[{}] LLM failed ({}), using fallback", self.name, e);
                 fallback_choice(galaxy.round, event.options.len())
             }
         }
+    }
+
+    fn comment(&self, event: &Event, galaxy: &GalaxyState) -> Option<String> {
+        let prompt = build_deliberation_prompt(PERSONALITY, event, galaxy);
+        let response = ollama_generate(&self.config.host, &self.config.model, &prompt).ok()?;
+        let choice = extract_choice(&response, event.options.len()).ok()?;
+        let comment = extract_comment(&response).unwrap_or_else(|| "(no comment)".to_string());
+        Some(format!("prefers [{}] — {}", choice, comment))
     }
 }
 

@@ -19,6 +19,7 @@ struct CliConfig {
     rounds: u32,
     enable_llm: bool,
     enable_llm_bot: bool,
+    deliberate: bool,
     ollama_host: String,
     ollama_model: String,
     spawn_ollama: bool,
@@ -33,6 +34,7 @@ fn parse_args() -> CliConfig {
         rounds: DEFAULT_ROUNDS,
         enable_llm: false,
         enable_llm_bot: false,
+        deliberate: false,
         ollama_host: "127.0.0.1:11434".to_string(),
         ollama_model: "llama3".to_string(),
         spawn_ollama: false,
@@ -56,6 +58,7 @@ fn parse_args() -> CliConfig {
             }
             "--enable-llm" => cfg.enable_llm = true,
             "--enable-llm-bot" => cfg.enable_llm_bot = true,
+            "--deliberate" => cfg.deliberate = true,
             "--spawn-ollama" => cfg.spawn_ollama = true,
             "--ollama-bin" => {
                 if let Some(v) = it.next() {
@@ -74,7 +77,7 @@ fn parse_args() -> CliConfig {
             }
             "--help" | "-h" => {
                 println!(
-                    "council-cli\n\nFlags:\n  --rounds <n>          Number of rounds (default: 25)\n  --enable-llm          Give all 5 bots unique LLM personalities via Ollama\n  --enable-llm-bot      Add a 6th dedicated LLM bot to the council\n  --spawn-ollama        Start/stop Ollama automatically for this run\n  --ollama-bin <path>   Path to ollama binary (default: ollama)\n  --ollama-host <host:port>  Ollama endpoint (default: 127.0.0.1:11434)\n  --ollama-model <model>     LLM model name (default: llama3)\n"
+                    "council-cli\n\nFlags:\n  --rounds <n>          Number of rounds (default: 25)\n  --enable-llm          Give all 5 bots unique LLM personalities via Ollama\n  --enable-llm-bot      Add a 6th dedicated LLM bot to the council\n  --deliberate          Let bots publish short comments before the final vote\n  --spawn-ollama        Start/stop Ollama automatically for this run\n  --ollama-bin <path>   Path to ollama binary (default: ollama)\n  --ollama-host <host:port>  Ollama endpoint (default: 127.0.0.1:11434)\n  --ollama-model <model>     LLM model name (default: llama3)\n"
                 );
                 std::process::exit(0);
             }
@@ -214,11 +217,36 @@ fn main() {
         }
         println!();
 
+        // Optional deliberation phase
+        let mut event_for_vote = event.clone();
+        if cfg.deliberate {
+            let mut lines = Vec::new();
+            for bot in &bots {
+                if let Some(comment) = bot.comment(&event, &galaxy) {
+                    lines.push(format!("{}: {}", bot.name(), comment));
+                }
+            }
+
+            if !lines.is_empty() {
+                println!("  [DELIBERATION]");
+                for line in &lines {
+                    println!("    {}", line);
+                }
+                println!();
+
+                event_for_vote.description = format!(
+                    "{}\n\nCOUNCIL DELIBERATION:\n{}",
+                    event_for_vote.description,
+                    lines.join("\n")
+                );
+            }
+        }
+
         // Collect votes
         let mut votes = Vec::new();
         for bot in &bots {
             let weight = calculate_vote_weight(bot.as_ref(), &event);
-            let chosen = bot.vote(&event, &galaxy);
+            let chosen = bot.vote(&event_for_vote, &galaxy);
             let chosen = chosen.min(event.options.len().saturating_sub(1));
             println!(
                 "    {} votes [{}] (weight: {:.2})",

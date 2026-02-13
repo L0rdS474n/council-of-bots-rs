@@ -219,6 +219,23 @@ pub fn ollama_choose(
     extract_choice(&response, options_len)
 }
 
+/// Ask Ollama to produce a short deliberation comment AND a preferred choice.
+///
+/// Returns `(choice, comment)`.
+pub fn ollama_deliberate(
+    host: &str,
+    model: &str,
+    personality: &str,
+    event: &Event,
+    galaxy: &GalaxyState,
+) -> Result<(usize, String), String> {
+    let prompt = build_deliberation_prompt(personality, event, galaxy);
+    let response = ollama_generate(host, model, &prompt)?;
+    let choice = extract_choice(&response, event.options.len())?;
+    let comment = extract_comment(&response).unwrap_or_else(|| "(no comment)".to_string());
+    Ok((choice, comment))
+}
+
 /// Build a galactic event prompt with a personality prefix.
 pub fn build_galactic_prompt(personality: &str, event: &Event, galaxy: &GalaxyState) -> String {
     let threats = galaxy
@@ -270,6 +287,84 @@ pub fn build_galactic_prompt(personality: &str, event: &Event, galaxy: &GalaxySt
         s.push_str(&format!("{}: {}\n", i, opt.description));
     }
     s
+}
+
+/// Build a deliberation prompt used to generate a short council statement.
+///
+/// The model should return ONLY JSON: {"choice": <int>, "comment": <short string>}.
+pub fn build_deliberation_prompt(personality: &str, event: &Event, galaxy: &GalaxyState) -> String {
+    let threats = galaxy
+        .threats
+        .iter()
+        .map(|t| format!("{}(sev={}, rounds={})", t.name, t.severity, t.rounds_active))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let species = galaxy
+        .relations
+        .iter()
+        .map(|(n, r)| format!("{}={:?}", n, r))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut s = String::new();
+    s.push_str(personality);
+    s.push_str("\n\n");
+    s.push_str("You are participating as a council member in a galactic exploration simulation.\n");
+    s.push_str("Your task: publish a short deliberation statement for the council AND include your preferred option index.\n");
+    s.push_str("Return ONLY a JSON object: {\"choice\": <integer>, \"comment\": <short string>}\n");
+    s.push_str("Do not include any other text.\n\n");
+
+    s.push_str(&format!("ROUND: {}\n", galaxy.round));
+    s.push_str(&format!("SECTORS: {}\n", galaxy.explored_sectors.len()));
+    s.push_str(&format!("SPECIES: {}\n", galaxy.known_species.len()));
+    s.push_str(&format!(
+        "RELATIONS: {}\n",
+        if species.is_empty() {
+            "(none)"
+        } else {
+            &species
+        }
+    ));
+    s.push_str(&format!(
+        "THREATS: {}\n\n",
+        if threats.is_empty() {
+            "(none)"
+        } else {
+            &threats
+        }
+    ));
+
+    s.push_str("EVENT:\n");
+    s.push_str(&event.description);
+    s.push_str("\n\nOPTIONS:\n");
+    for (i, opt) in event.options.iter().enumerate() {
+        s.push_str(&format!("{}: {}\n", i, opt.description));
+    }
+
+    s.push_str("\nConstraints for comment:\n");
+    s.push_str("- Be concise (<= 200 characters).\n");
+    s.push_str("- Reference risks/tradeoffs.\n");
+
+    s
+}
+
+/// Extract a deliberation comment from an LLM response.
+///
+/// Looks for JSON {comment: "..."} or falls back to {reason: "..."}.
+pub fn extract_comment(response: &str) -> Option<String> {
+    let json_str = extract_first_json_object(response)?;
+    let v: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    v.get("comment")
+        .and_then(|c| c.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            v.get("reason")
+                .and_then(|c| c.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
 }
 
 #[cfg(test)]

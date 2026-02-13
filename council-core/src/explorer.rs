@@ -23,6 +23,14 @@ pub trait GalacticCouncilMember: Send + Sync {
     ///
     /// Returns the index of the chosen response option (0-indexed).
     fn vote(&self, event: &Event, galaxy: &GalaxyState) -> usize;
+
+    /// Optional deliberation comment for this event.
+    ///
+    /// Used when the simulation runs in a "deliberation" mode where bots
+    /// publish short statements before the final vote.
+    fn comment(&self, _event: &Event, _galaxy: &GalaxyState) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]

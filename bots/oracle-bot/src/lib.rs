@@ -1,7 +1,7 @@
 use council_core::event::Event;
 use council_core::explorer::GalacticCouncilMember;
 use council_core::galaxy::GalaxyState;
-use council_core::ollama::{build_galactic_prompt, ollama_choose, OllamaConfig};
+use council_core::ollama::{build_galactic_prompt, ollama_choose, ollama_deliberate, OllamaConfig};
 
 const PERSONALITY: &str = "You are a visionary scientist who sees patterns others miss. You adapt your strategy based on long-term trends and plan several moves ahead.";
 
@@ -106,6 +106,13 @@ impl GalacticCouncilMember for OracleBot {
 
         // Default: balanced middle option
         balanced_option(num_options)
+    }
+
+    fn comment(&self, event: &Event, galaxy: &GalaxyState) -> Option<String> {
+        let cfg = self.ollama.as_ref()?;
+        let (choice, comment) =
+            ollama_deliberate(&cfg.host, &cfg.model, PERSONALITY, event, galaxy).ok()?;
+        Some(format!("prefers [{}] — {}", choice, comment))
     }
 }
 

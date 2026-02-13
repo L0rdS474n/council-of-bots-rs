@@ -1,7 +1,7 @@
 use council_core::event::Event;
 use council_core::explorer::GalacticCouncilMember;
 use council_core::galaxy::GalaxyState;
-use council_core::ollama::{build_galactic_prompt, ollama_choose, OllamaConfig};
+use council_core::ollama::{build_galactic_prompt, ollama_choose, ollama_deliberate, OllamaConfig};
 use council_core::{Context, CouncilMember, Decision};
 
 const PERSONALITY: &str = "You are a cultural diplomat who seeks balance and harmony. You believe in giving every approach a fair chance and rotating strategies to maintain equilibrium.";
@@ -68,6 +68,13 @@ impl GalacticCouncilMember for CycleBot {
             return 0;
         }
         (galaxy.round as usize) % num
+    }
+
+    fn comment(&self, event: &Event, galaxy: &GalaxyState) -> Option<String> {
+        let cfg = self.ollama.as_ref()?;
+        let (choice, comment) =
+            ollama_deliberate(&cfg.host, &cfg.model, PERSONALITY, event, galaxy).ok()?;
+        Some(format!("prefers [{}] — {}", choice, comment))
     }
 }
 

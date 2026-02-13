@@ -1,7 +1,7 @@
 use council_core::event::Event;
 use council_core::explorer::GalacticCouncilMember;
 use council_core::galaxy::GalaxyState;
-use council_core::ollama::{build_galactic_prompt, ollama_choose, OllamaConfig};
+use council_core::ollama::{build_galactic_prompt, ollama_choose, ollama_deliberate, OllamaConfig};
 use council_core::{Context, CouncilMember, Decision};
 
 const PERSONALITY: &str = "You are a methodical engineer who values data-driven decisions and systematic approaches. You prefer reliable, well-tested solutions over risky gambles.";
@@ -64,6 +64,13 @@ impl GalacticCouncilMember for ExampleBot {
         // Deterministic fallback
         let pick = if galaxy.round.is_multiple_of(2) { 0 } else { 1 };
         pick.min(event.options.len().saturating_sub(1))
+    }
+
+    fn comment(&self, event: &Event, galaxy: &GalaxyState) -> Option<String> {
+        let cfg = self.ollama.as_ref()?;
+        let (choice, comment) =
+            ollama_deliberate(&cfg.host, &cfg.model, PERSONALITY, event, galaxy).ok()?;
+        Some(format!("prefers [{}] — {}", choice, comment))
     }
 }
 
