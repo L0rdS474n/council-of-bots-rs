@@ -521,6 +521,115 @@ impl EventTemplate for ThreatEmergenceTemplate {
     }
 }
 
+/// An existing threat escalates — the council can counter-attack, contain, or negotiate.
+pub struct ThreatEscalationTemplate;
+
+impl EventTemplate for ThreatEscalationTemplate {
+    fn name(&self) -> &'static str {
+        "Threat Escalation"
+    }
+
+    fn is_applicable(&self, galaxy: &GalaxyState) -> bool {
+        !galaxy.threats.is_empty()
+    }
+
+    fn weight(&self) -> u32 {
+        8
+    }
+
+    fn generate(&self, galaxy: &GalaxyState, rng: &mut dyn RngCore) -> Event {
+        let threat = &galaxy.threats[rng.next_u32() as usize % galaxy.threats.len()];
+        let threat_name = threat.name.clone();
+        let severity = threat.severity;
+
+        let counter_success = rng.next_u32().is_multiple_of(3);
+        let negotiate_success = rng.next_u32().is_multiple_of(2);
+
+        Event {
+            description: format!(
+                "The {} have intensified operations. Current severity: {}. \
+                The council must decide how to respond to this escalating threat.",
+                threat_name, severity
+            ),
+            relevant_expertise: vec![
+                ("military".to_string(), 0.4),
+                ("strategy".to_string(), 0.4),
+                ("engineering".to_string(), 0.2),
+            ],
+            options: vec![
+                ResponseOption {
+                    description: "Launch a full counter-offensive to eliminate the threat"
+                        .to_string(),
+                    outcome: if counter_success {
+                        Outcome {
+                            description: format!(
+                                "A decisive strike eliminates the {}! The threat is no more.",
+                                threat_name
+                            ),
+                            score_delta: 20,
+                            state_changes: vec![StateChange::RemoveThreat(threat_name.clone())],
+                        }
+                    } else {
+                        Outcome {
+                            description: format!(
+                                "The counter-offensive against the {} fails and provokes retaliation.",
+                                threat_name
+                            ),
+                            score_delta: -8,
+                            state_changes: vec![StateChange::ModifyThreatSeverity {
+                                name: threat_name.clone(),
+                                delta: 1,
+                            }],
+                        }
+                    },
+                },
+                ResponseOption {
+                    description: "Deploy strategic containment measures".to_string(),
+                    outcome: Outcome {
+                        description: format!(
+                            "Containment protocols reduce the severity of the {}. Steady progress.",
+                            threat_name
+                        ),
+                        score_delta: 8,
+                        state_changes: vec![StateChange::ModifyThreatSeverity {
+                            name: threat_name.clone(),
+                            delta: -1,
+                        }],
+                    },
+                },
+                ResponseOption {
+                    description: "Negotiate a ceasefire".to_string(),
+                    outcome: if negotiate_success {
+                        Outcome {
+                            description: format!(
+                                "Negotiations succeed. The {} agree to stand down significantly.",
+                                threat_name
+                            ),
+                            score_delta: 12,
+                            state_changes: vec![StateChange::ModifyThreatSeverity {
+                                name: threat_name.clone(),
+                                delta: -2,
+                            }],
+                        }
+                    } else {
+                        Outcome {
+                            description: format!(
+                                "The {} exploit the ceasefire talks to strengthen their position!",
+                                threat_name
+                            ),
+                            score_delta: -10,
+                            state_changes: vec![StateChange::ModifyThreatSeverity {
+                                name: threat_name.clone(),
+                                delta: 2,
+                            }],
+                        }
+                    },
+                },
+            ],
+        }
+    }
+}
+
 /// Supplies are running low and the council must respond.
 pub struct ResourceScarcityTemplate;
 
@@ -1059,6 +1168,7 @@ pub fn default_templates() -> Vec<Box<dyn EventTemplate>> {
         Box::new(AnomalyTemplate),
         Box::new(FirstContactTemplate),
         Box::new(ThreatEmergenceTemplate),
+        Box::new(ThreatEscalationTemplate),
         Box::new(ResourceScarcityTemplate),
         Box::new(ArtifactTemplate),
         Box::new(DiplomaticRequestTemplate),
@@ -1474,6 +1584,154 @@ mod tests {
         );
     }
 
+    // ====================================================================
+    // ThreatEscalationTemplate tests
+    // ====================================================================
+
+    #[test]
+    fn threat_escalation_not_applicable_without_threats() {
+        let template = ThreatEscalationTemplate;
+        let galaxy = GalaxyState::new();
+        assert!(!template.is_applicable(&galaxy));
+    }
+
+    #[test]
+    fn threat_escalation_applicable_with_threats() {
+        let template = ThreatEscalationTemplate;
+        let mut galaxy = GalaxyState::new();
+        galaxy.threats.push(Threat {
+            name: "Space Pirates".to_string(),
+            severity: 2,
+            rounds_active: 0,
+        });
+        assert!(template.is_applicable(&galaxy));
+    }
+
+    #[test]
+    fn threat_escalation_has_correct_weight() {
+        let template = ThreatEscalationTemplate;
+        assert_eq!(template.weight(), 8);
+    }
+
+    #[test]
+    fn threat_escalation_generates_three_options() {
+        let template = ThreatEscalationTemplate;
+        let mut galaxy = GalaxyState::new();
+        galaxy.threats.push(Threat {
+            name: "Void Swarm".to_string(),
+            severity: 1,
+            rounds_active: 0,
+        });
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let event = template.generate(&galaxy, &mut rng);
+        assert_eq!(event.options.len(), 3);
+        assert!(!event.relevant_expertise.is_empty());
+    }
+
+    #[test]
+    fn threat_escalation_option1_always_reduces_severity() {
+        let template = ThreatEscalationTemplate;
+        for seed in 0..10 {
+            let mut galaxy = GalaxyState::new();
+            galaxy.threats.push(Threat {
+                name: "Rogue AI Fleet".to_string(),
+                severity: 3,
+                rounds_active: 0,
+            });
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let event = template.generate(&galaxy, &mut rng);
+            let option1 = &event.options[1];
+            assert_eq!(option1.outcome.score_delta, 8);
+            let has_reduce = option1.outcome.state_changes.iter().any(
+                |c| matches!(c, StateChange::ModifyThreatSeverity { delta, .. } if *delta == -1),
+            );
+            assert!(
+                has_reduce,
+                "Option 1 should always reduce severity (seed {})",
+                seed
+            );
+        }
+    }
+
+    #[test]
+    fn threat_escalation_counter_offensive_branches() {
+        let template = ThreatEscalationTemplate;
+        let mut saw_remove = false;
+        let mut saw_escalate = false;
+        for seed in 0..100 {
+            let mut galaxy = GalaxyState::new();
+            galaxy.threats.push(Threat {
+                name: "Dark Matter Entity".to_string(),
+                severity: 2,
+                rounds_active: 0,
+            });
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let event = template.generate(&galaxy, &mut rng);
+            let option0 = &event.options[0];
+            if option0
+                .outcome
+                .state_changes
+                .iter()
+                .any(|c| matches!(c, StateChange::RemoveThreat(_)))
+            {
+                saw_remove = true;
+                assert_eq!(option0.outcome.score_delta, 20);
+            } else {
+                saw_escalate = true;
+                assert_eq!(option0.outcome.score_delta, -8);
+                assert!(option0.outcome.state_changes.iter().any(|c| {
+                    matches!(c, StateChange::ModifyThreatSeverity { delta, .. } if *delta == 1)
+                }));
+            }
+        }
+        assert!(
+            saw_remove,
+            "Should see at least one RemoveThreat across 100 seeds"
+        );
+        assert!(
+            saw_escalate,
+            "Should see at least one escalation across 100 seeds"
+        );
+    }
+
+    #[test]
+    fn threat_escalation_negotiate_branches() {
+        let template = ThreatEscalationTemplate;
+        let mut saw_success = false;
+        let mut saw_failure = false;
+        for seed in 0..100 {
+            let mut galaxy = GalaxyState::new();
+            galaxy.threats.push(Threat {
+                name: "Hostile Probes".to_string(),
+                severity: 1,
+                rounds_active: 0,
+            });
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let event = template.generate(&galaxy, &mut rng);
+            let option2 = &event.options[2];
+            if option2.outcome.score_delta == 12 {
+                saw_success = true;
+                assert!(option2.outcome.state_changes.iter().any(|c| {
+                    matches!(c, StateChange::ModifyThreatSeverity { delta, .. } if *delta == -2)
+                }));
+            } else {
+                saw_failure = true;
+                assert_eq!(option2.outcome.score_delta, -10);
+                assert!(option2.outcome.state_changes.iter().any(|c| {
+                    matches!(c, StateChange::ModifyThreatSeverity { delta, .. } if *delta == 2)
+                }));
+            }
+        }
+        assert!(
+            saw_success,
+            "Should see at least one negotiate success across 100 seeds"
+        );
+        assert!(
+            saw_failure,
+            "Should see at least one negotiate failure across 100 seeds"
+        );
+    }
+
     #[test]
     fn default_templates_includes_new_templates() {
         let templates = default_templates();
@@ -1483,6 +1741,7 @@ mod tests {
         assert!(names.contains(&"Diplomatic Request"));
         assert!(names.contains(&"Cultural Exchange"));
         assert!(names.contains(&"Tech Breakthrough"));
-        assert_eq!(templates.len(), 10);
+        assert!(names.contains(&"Threat Escalation"));
+        assert_eq!(templates.len(), 11);
     }
 }
