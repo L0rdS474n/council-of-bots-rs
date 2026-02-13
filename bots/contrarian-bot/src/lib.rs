@@ -1,10 +1,33 @@
 use council_core::event::Event;
 use council_core::explorer::GalacticCouncilMember;
 use council_core::galaxy::GalaxyState;
+use council_core::ollama::{build_galactic_prompt, ollama_choose, OllamaConfig};
 use council_core::{Context, CouncilMember, Decision, DominantOutcome};
 
+const PERSONALITY: &str = "You are a hardened military strategist who always challenges the obvious choice. You prepare for worst-case scenarios and never underestimate threats.";
+
 /// ContrarianBot reacts to the council's previous round by opposing the majority.
-pub struct ContrarianBot;
+pub struct ContrarianBot {
+    ollama: Option<OllamaConfig>,
+}
+
+impl ContrarianBot {
+    pub fn new() -> Self {
+        Self { ollama: None }
+    }
+
+    pub fn with_ollama(config: OllamaConfig) -> Self {
+        Self {
+            ollama: Some(config),
+        }
+    }
+}
+
+impl Default for ContrarianBot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CouncilMember for ContrarianBot {
     fn name(&self) -> &'static str {
@@ -37,7 +60,15 @@ impl GalacticCouncilMember for ContrarianBot {
     /// Threat-aware contrarian strategy. Picks the defensive first option (0)
     /// when the event involves military expertise or the galaxy has active
     /// threats. Otherwise falls back to the contrarian last-option pick.
+    /// Falls back to deterministic logic if Ollama is unavailable.
     fn vote(&self, event: &Event, galaxy: &GalaxyState) -> usize {
+        if let Some(cfg) = &self.ollama {
+            let prompt = build_galactic_prompt(PERSONALITY, event, galaxy);
+            if let Ok(choice) = ollama_choose(&cfg.host, &cfg.model, &prompt, event.options.len()) {
+                return choice;
+            }
+        }
+        // Deterministic fallback
         let is_threat = event
             .relevant_expertise
             .iter()
@@ -93,7 +124,7 @@ mod tests {
 
     #[test]
     fn abstains_on_first_round() {
-        let bot = ContrarianBot;
+        let bot = ContrarianBot::new();
         let ctx = Context {
             round: 1,
             previous_tally: None,
@@ -103,7 +134,7 @@ mod tests {
 
     #[test]
     fn opposes_approval_majority() {
-        let bot = ContrarianBot;
+        let bot = ContrarianBot::new();
         let ctx = context_with_tally(RoundTally {
             approvals: 3,
             rejections: 1,
@@ -115,7 +146,7 @@ mod tests {
 
     #[test]
     fn opposes_rejection_majority() {
-        let bot = ContrarianBot;
+        let bot = ContrarianBot::new();
         let ctx = context_with_tally(RoundTally {
             approvals: 0,
             rejections: 4,
@@ -127,7 +158,7 @@ mod tests {
 
     #[test]
     fn disrupts_abstention_majority() {
-        let bot = ContrarianBot;
+        let bot = ContrarianBot::new();
         let ctx = context_with_tally(RoundTally {
             approvals: 0,
             rejections: 1,
@@ -142,7 +173,7 @@ mod tests {
 
     #[test]
     fn counters_custom_majority() {
-        let bot = ContrarianBot;
+        let bot = ContrarianBot::new();
         let ctx = context_with_tally(RoundTally {
             approvals: 1,
             rejections: 1,
@@ -154,7 +185,7 @@ mod tests {
 
     #[test]
     fn abstains_on_ties() {
-        let bot = ContrarianBot;
+        let bot = ContrarianBot::new();
         let ctx = context_with_tally(RoundTally {
             approvals: 2,
             rejections: 2,
@@ -168,7 +199,7 @@ mod tests {
 
     #[test]
     fn picks_first_option_on_military_event() {
-        let bot = ContrarianBot;
+        let bot = ContrarianBot::new();
         let event = make_event(vec!["military", "strategy"], 3);
         let galaxy = GalaxyState::new();
 
@@ -181,7 +212,7 @@ mod tests {
 
     #[test]
     fn picks_last_option_on_non_threat_event() {
-        let bot = ContrarianBot;
+        let bot = ContrarianBot::new();
         let event = make_event(vec!["science", "exploration"], 3);
         let galaxy = GalaxyState::new(); // empty galaxy, no threats
 
@@ -194,7 +225,7 @@ mod tests {
 
     #[test]
     fn picks_first_option_when_galaxy_has_threats() {
-        let bot = ContrarianBot;
+        let bot = ContrarianBot::new();
         let event = make_event(vec!["diplomacy"], 4);
         let mut galaxy = GalaxyState::new();
         galaxy.threats.push(Threat {
@@ -212,7 +243,7 @@ mod tests {
 
     #[test]
     fn single_option_returns_zero() {
-        let bot = ContrarianBot;
+        let bot = ContrarianBot::new();
         let event = make_event(vec!["any"], 1);
         let galaxy = GalaxyState::new();
 
@@ -225,7 +256,7 @@ mod tests {
 
     #[test]
     fn expertise_includes_military_and_strategy() {
-        let bot = ContrarianBot;
+        let bot = ContrarianBot::new();
         let expertise = bot.expertise();
 
         let military = expertise.iter().find(|(tag, _)| *tag == "military");
@@ -245,5 +276,27 @@ mod tests {
             *military_level > 0.0,
             "Military expertise level should be positive"
         );
+    }
+
+    #[test]
+    fn test_new_has_no_ollama() {
+        let bot = ContrarianBot::new();
+        assert!(bot.ollama.is_none());
+    }
+
+    #[test]
+    fn test_with_ollama_stores_config() {
+        let cfg = OllamaConfig {
+            host: "127.0.0.1:11434".to_string(),
+            model: "llama3".to_string(),
+        };
+        let bot = ContrarianBot::with_ollama(cfg);
+        assert!(bot.ollama.is_some());
+    }
+
+    #[test]
+    fn test_personality_constant() {
+        assert!(PERSONALITY.contains("military"));
+        assert!(PERSONALITY.contains("strategist"));
     }
 }

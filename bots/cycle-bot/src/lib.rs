@@ -1,11 +1,34 @@
 use council_core::event::Event;
 use council_core::explorer::GalacticCouncilMember;
 use council_core::galaxy::GalaxyState;
+use council_core::ollama::{build_galactic_prompt, ollama_choose, OllamaConfig};
 use council_core::{Context, CouncilMember, Decision};
 
+const PERSONALITY: &str = "You are a cultural diplomat who seeks balance and harmony. You believe in giving every approach a fair chance and rotating strategies to maintain equilibrium.";
+
 /// CycleBot rotates its stance every round to encourage variety in the council.
-/// The pattern is approve ➜ reject ➜ abstain.
-pub struct CycleBot;
+/// The pattern is approve -> reject -> abstain.
+pub struct CycleBot {
+    ollama: Option<OllamaConfig>,
+}
+
+impl CycleBot {
+    pub fn new() -> Self {
+        Self { ollama: None }
+    }
+
+    pub fn with_ollama(config: OllamaConfig) -> Self {
+        Self {
+            ollama: Some(config),
+        }
+    }
+}
+
+impl Default for CycleBot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CouncilMember for CycleBot {
     fn name(&self) -> &'static str {
@@ -31,7 +54,15 @@ impl GalacticCouncilMember for CycleBot {
     }
 
     /// Cycles through available options based on round number.
+    /// Falls back to deterministic logic if Ollama is unavailable.
     fn vote(&self, event: &Event, galaxy: &GalaxyState) -> usize {
+        if let Some(cfg) = &self.ollama {
+            let prompt = build_galactic_prompt(PERSONALITY, event, galaxy);
+            if let Ok(choice) = ollama_choose(&cfg.host, &cfg.model, &prompt, event.options.len()) {
+                return choice;
+            }
+        }
+        // Deterministic fallback
         let num = event.options.len();
         if num == 0 {
             return 0;
@@ -47,7 +78,7 @@ mod tests {
 
     #[test]
     fn cycles_through_three_decisions() {
-        let bot = CycleBot;
+        let bot = CycleBot::new();
         let rounds = [
             (1, Decision::Approve),
             (2, Decision::Reject),
@@ -62,5 +93,27 @@ mod tests {
             };
             assert_eq!(CouncilMember::vote(&bot, &ctx), expected);
         }
+    }
+
+    #[test]
+    fn test_new_has_no_ollama() {
+        let bot = CycleBot::new();
+        assert!(bot.ollama.is_none());
+    }
+
+    #[test]
+    fn test_with_ollama_stores_config() {
+        let cfg = OllamaConfig {
+            host: "127.0.0.1:11434".to_string(),
+            model: "llama3".to_string(),
+        };
+        let bot = CycleBot::with_ollama(cfg);
+        assert!(bot.ollama.is_some());
+    }
+
+    #[test]
+    fn test_personality_constant() {
+        assert!(PERSONALITY.contains("diplomat"));
+        assert!(PERSONALITY.contains("balance"));
     }
 }

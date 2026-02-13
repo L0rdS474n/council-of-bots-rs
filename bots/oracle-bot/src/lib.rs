@@ -1,18 +1,41 @@
 use council_core::event::Event;
 use council_core::explorer::GalacticCouncilMember;
 use council_core::galaxy::GalaxyState;
+use council_core::ollama::{build_galactic_prompt, ollama_choose, OllamaConfig};
+
+const PERSONALITY: &str = "You are a visionary scientist who sees patterns others miss. You adapt your strategy based on long-term trends and plan several moves ahead.";
 
 /// OracleBot is a galactic strategist that analyzes the full state of the galaxy
 /// to make informed decisions. It shifts priorities based on threats, diplomacy,
 /// exploration progress, and discovery count.
 ///
 /// Strategy:
-/// - If active threats exist with high severity → prefer aggressive/military options (index 0)
-/// - If hostile species outnumber allies → prefer diplomatic options (often index 0 or 1)
-/// - If few sectors explored → prefer exploration/bold options (index 0)
-/// - If galaxy is stable → prefer cautious/research options (index 1)
+/// - If active threats exist with high severity -> prefer aggressive/military options (index 0)
+/// - If hostile species outnumber allies -> prefer diplomatic options (often index 0 or 1)
+/// - If few sectors explored -> prefer exploration/bold options (index 0)
+/// - If galaxy is stable -> prefer cautious/research options (index 1)
 /// - Fallback: middle option as balanced choice
-pub struct OracleBot;
+pub struct OracleBot {
+    ollama: Option<OllamaConfig>,
+}
+
+impl OracleBot {
+    pub fn new() -> Self {
+        Self { ollama: None }
+    }
+
+    pub fn with_ollama(config: OllamaConfig) -> Self {
+        Self {
+            ollama: Some(config),
+        }
+    }
+}
+
+impl Default for OracleBot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl GalacticCouncilMember for OracleBot {
     fn name(&self) -> &'static str {
@@ -30,6 +53,13 @@ impl GalacticCouncilMember for OracleBot {
     }
 
     fn vote(&self, event: &Event, galaxy: &GalaxyState) -> usize {
+        if let Some(cfg) = &self.ollama {
+            let prompt = build_galactic_prompt(PERSONALITY, event, galaxy);
+            if let Ok(choice) = ollama_choose(&cfg.host, &cfg.model, &prompt, event.options.len()) {
+                return choice;
+            }
+        }
+        // Deterministic fallback
         let num_options = event.options.len();
         if num_options == 0 {
             return 0;
@@ -126,7 +156,7 @@ mod tests {
 
     #[test]
     fn oracle_has_broad_expertise() {
-        let bot = OracleBot;
+        let bot = OracleBot::new();
         let expertise = bot.expertise();
         assert!(expertise.len() >= 4);
         // Strategy should be highest
@@ -135,7 +165,7 @@ mod tests {
 
     #[test]
     fn oracle_acts_boldly_under_threat() {
-        let bot = OracleBot;
+        let bot = OracleBot::new();
         let mut galaxy = GalaxyState::new();
         galaxy.threats.push(Threat {
             name: "Space Pirates".to_string(),
@@ -148,7 +178,7 @@ mod tests {
 
     #[test]
     fn oracle_explores_early() {
-        let bot = OracleBot;
+        let bot = OracleBot::new();
         let galaxy = GalaxyState::new(); // Only Home Sector
         let event = make_event(&[("exploration", 0.4), ("science", 0.3)], 3);
         assert_eq!(bot.vote(&event, &galaxy), 0);
@@ -156,7 +186,7 @@ mod tests {
 
     #[test]
     fn oracle_diplomacy_when_hostile() {
-        let bot = OracleBot;
+        let bot = OracleBot::new();
         let mut galaxy = GalaxyState::new();
         galaxy.known_species.push(Species {
             name: "Zorblax".to_string(),
@@ -171,7 +201,7 @@ mod tests {
 
     #[test]
     fn oracle_cautious_when_stable() {
-        let bot = OracleBot;
+        let bot = OracleBot::new();
         let mut galaxy = GalaxyState::new();
         // Add enough discoveries to trigger cautious mode
         for i in 0..4 {
@@ -186,7 +216,7 @@ mod tests {
 
     #[test]
     fn oracle_returns_valid_index() {
-        let bot = OracleBot;
+        let bot = OracleBot::new();
         let galaxy = GalaxyState::new();
         for n in 1..=5 {
             let event = make_event(&[("science", 0.5)], n);
@@ -198,5 +228,27 @@ mod tests {
                 n
             );
         }
+    }
+
+    #[test]
+    fn test_new_has_no_ollama() {
+        let bot = OracleBot::new();
+        assert!(bot.ollama.is_none());
+    }
+
+    #[test]
+    fn test_with_ollama_stores_config() {
+        let cfg = OllamaConfig {
+            host: "127.0.0.1:11434".to_string(),
+            model: "llama3".to_string(),
+        };
+        let bot = OracleBot::with_ollama(cfg);
+        assert!(bot.ollama.is_some());
+    }
+
+    #[test]
+    fn test_personality_constant() {
+        assert!(PERSONALITY.contains("visionary"));
+        assert!(PERSONALITY.contains("scientist"));
     }
 }

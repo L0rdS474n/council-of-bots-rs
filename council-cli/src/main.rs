@@ -158,11 +158,11 @@ fn main() {
     let cfg = parse_args();
 
     let mut bots: Vec<Box<dyn GalacticCouncilMember>> = vec![
-        Box::new(ExampleBot),
-        Box::new(FirstBot),
-        Box::new(CycleBot),
-        Box::new(ContrarianBot),
-        Box::new(OracleBot),
+        Box::new(ExampleBot::new()),
+        Box::new(FirstBot::new()),
+        Box::new(CycleBot::new()),
+        Box::new(ContrarianBot::new()),
+        Box::new(OracleBot::new()),
     ];
 
     let _ollama_guard = maybe_spawn_ollama(&cfg);
@@ -435,11 +435,11 @@ mod tests {
     #[test]
     fn full_simulation_runs_deterministically() {
         let bots: Vec<Box<dyn GalacticCouncilMember>> = vec![
-            Box::new(ExampleBot),
-            Box::new(FirstBot),
-            Box::new(CycleBot),
-            Box::new(ContrarianBot),
-            Box::new(OracleBot),
+            Box::new(ExampleBot::new()),
+            Box::new(FirstBot::new()),
+            Box::new(CycleBot::new()),
+            Box::new(ContrarianBot::new()),
+            Box::new(OracleBot::new()),
         ];
 
         let templates = default_templates();
@@ -486,11 +486,11 @@ mod tests {
     fn same_seed_same_outcome() {
         fn run_sim(seed: u64) -> i32 {
             let bots: Vec<Box<dyn GalacticCouncilMember>> = vec![
-                Box::new(ExampleBot),
-                Box::new(FirstBot),
-                Box::new(CycleBot),
-                Box::new(ContrarianBot),
-                Box::new(OracleBot),
+                Box::new(ExampleBot::new()),
+                Box::new(FirstBot::new()),
+                Box::new(CycleBot::new()),
+                Box::new(ContrarianBot::new()),
+                Box::new(OracleBot::new()),
             ];
 
             let templates = default_templates();
