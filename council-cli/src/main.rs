@@ -7,19 +7,68 @@ use council_core::{default_templates, generate_event};
 use cycle_bot::CycleBot;
 use example_bot::ExampleBot;
 use first_bot::FirstBot;
+use llm_bot::LlmBot;
 use oracle_bot::OracleBot;
 use rand::SeedableRng;
 
 const TOTAL_ROUNDS: u32 = 25;
 
+#[derive(Debug, Clone, Default)]
+struct CliConfig {
+    enable_llm_bot: bool,
+    ollama_host: String,
+    ollama_model: String,
+}
+
+fn parse_args() -> CliConfig {
+    // Minimal, dependency-free arg parsing.
+    // Example:
+    //   cargo run -p council-cli -- --enable-llm-bot --ollama-host 127.0.0.1:11434 --ollama-model llama3
+    let mut cfg = CliConfig {
+        enable_llm_bot: false,
+        ollama_host: "127.0.0.1:11434".to_string(),
+        ollama_model: "llama3".to_string(),
+    };
+
+    let mut it = std::env::args().skip(1);
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--enable-llm-bot" => cfg.enable_llm_bot = true,
+            "--ollama-host" => {
+                if let Some(v) = it.next() {
+                    cfg.ollama_host = v;
+                }
+            }
+            "--ollama-model" => {
+                if let Some(v) = it.next() {
+                    cfg.ollama_model = v;
+                }
+            }
+            "--help" | "-h" => {
+                println!("council-cli\n\nFlags:\n  --enable-llm-bot\n  --ollama-host <host:port> (default 127.0.0.1:11434)\n  --ollama-model <model> (default llama3)\n");
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }
+
+    cfg
+}
+
 fn main() {
-    let bots: Vec<Box<dyn GalacticCouncilMember>> = vec![
+    let cfg = parse_args();
+
+    let mut bots: Vec<Box<dyn GalacticCouncilMember>> = vec![
         Box::new(ExampleBot),
         Box::new(FirstBot),
         Box::new(CycleBot),
         Box::new(ContrarianBot),
         Box::new(OracleBot),
     ];
+
+    if cfg.enable_llm_bot {
+        bots.push(Box::new(LlmBot::new(cfg.ollama_host, cfg.ollama_model)));
+    }
 
     let templates = default_templates();
     let mut galaxy = GalaxyState::new();
