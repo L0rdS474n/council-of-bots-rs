@@ -161,6 +161,102 @@ impl EventTemplate for UnknownSignalTemplate {
     }
 }
 
+/// Discover a derelict vessel drifting through a known sector.
+pub struct DerelictTemplate;
+
+impl EventTemplate for DerelictTemplate {
+    fn name(&self) -> &'static str {
+        "Derelict Vessel"
+    }
+
+    fn is_applicable(&self, galaxy: &GalaxyState) -> bool {
+        // We need at least one explored sector to plausibly stumble upon wreckage.
+        !galaxy.explored_sectors.is_empty()
+    }
+
+    fn weight(&self) -> u32 {
+        6
+    }
+
+    fn generate(&self, galaxy: &GalaxyState, rng: &mut dyn RngCore) -> Event {
+        let sector =
+            &galaxy.explored_sectors[rng.next_u32() as usize % galaxy.explored_sectors.len()];
+        let discovery =
+            names::DISCOVERY_TYPES[rng.next_u32() as usize % names::DISCOVERY_TYPES.len()];
+        let threat = names::THREAT_NAMES[rng.next_u32() as usize % names::THREAT_NAMES.len()];
+
+        let risky_salvage = rng.next_u32().is_multiple_of(5);
+
+        Event {
+            description: format!(
+                "Scanners pick up a derelict vessel drifting within the {}. Its hull markings don’t match any known registry.",
+                sector.name
+            ),
+            relevant_expertise: vec![
+                ("exploration".to_string(), 0.35),
+                ("engineering".to_string(), 0.35),
+                ("science".to_string(), 0.2),
+                ("security".to_string(), 0.1),
+            ],
+            options: vec![
+                ResponseOption {
+                    description: "Board the vessel and salvage anything useful".to_string(),
+                    outcome: if risky_salvage {
+                        Outcome {
+                            description: format!(
+                                "The boarding team recovers a {} — but triggers dormant systems. A new threat emerges: {}.",
+                                discovery, threat
+                            ),
+                            score_delta: 6,
+                            state_changes: vec![
+                                StateChange::AddDiscovery(Discovery {
+                                    name: discovery.to_string(),
+                                    category: "salvage".to_string(),
+                                }),
+                                StateChange::AddThreat(Threat {
+                                    name: threat.to_string(),
+                                    severity: 1 + (rng.next_u32() % 3),
+                                    rounds_active: 0,
+                                }),
+                            ],
+                        }
+                    } else {
+                        Outcome {
+                            description: format!(
+                                "The salvage operation is a success. The council secures a {} from the wreck.",
+                                discovery
+                            ),
+                            score_delta: 14,
+                            state_changes: vec![StateChange::AddDiscovery(Discovery {
+                                name: discovery.to_string(),
+                                category: "salvage".to_string(),
+                            })],
+                        }
+                    },
+                },
+                ResponseOption {
+                    description: "Scan it remotely and leave it undisturbed".to_string(),
+                    outcome: Outcome {
+                        description: "Long-range scans yield useful telemetry and material analysis. Low risk, modest gain."
+                            .to_string(),
+                        score_delta: 6,
+                        state_changes: vec![],
+                    },
+                },
+                ResponseOption {
+                    description: "Mark the location and move on".to_string(),
+                    outcome: Outcome {
+                        description: "The derelict is logged for future expeditions. The council stays focused on current priorities."
+                            .to_string(),
+                        score_delta: 1,
+                        state_changes: vec![],
+                    },
+                },
+            ],
+        }
+    }
+}
+
 /// Encounter an anomaly in space.
 pub struct AnomalyTemplate;
 
@@ -694,6 +790,7 @@ impl EventTemplate for TechBreakthroughTemplate {
 pub fn default_templates() -> Vec<Box<dyn EventTemplate>> {
     vec![
         Box::new(UnknownSignalTemplate),
+        Box::new(DerelictTemplate),
         Box::new(AnomalyTemplate),
         Box::new(FirstContactTemplate),
         Box::new(ThreatEmergenceTemplate),
@@ -761,6 +858,29 @@ mod tests {
         assert!(!event.description.is_empty());
         assert_eq!(event.options.len(), 3);
         assert!(!event.relevant_expertise.is_empty());
+    }
+
+    #[test]
+    fn derelict_generates_salvage_or_threat() {
+        let template = DerelictTemplate;
+        let mut galaxy = GalaxyState::new();
+        // Ensure at least one non-home sector exists so selection is meaningful.
+        galaxy.explored_sectors.push(Sector {
+            name: "Beta Expanse".to_string(),
+            sector_type: SectorType::Void,
+        });
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+
+        let event = template.generate(&galaxy, &mut rng);
+        assert_eq!(event.options.len(), 3);
+
+        let has_discovery = event.options.iter().any(|opt| {
+            opt.outcome
+                .state_changes
+                .iter()
+                .any(|c| matches!(c, StateChange::AddDiscovery(_)))
+        });
+        assert!(has_discovery);
     }
 
     #[test]
@@ -983,8 +1103,9 @@ mod tests {
     fn default_templates_includes_new_templates() {
         let templates = default_templates();
         let names: Vec<&str> = templates.iter().map(|t| t.name()).collect();
+        assert!(names.contains(&"Derelict Vessel"));
         assert!(names.contains(&"Diplomatic Request"));
         assert!(names.contains(&"Tech Breakthrough"));
-        assert_eq!(templates.len(), 7);
+        assert_eq!(templates.len(), 8);
     }
 }
