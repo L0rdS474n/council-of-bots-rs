@@ -21,6 +21,13 @@ impl LlmBot {
     }
 }
 
+fn fallback_choice(round: u32, num_options: usize) -> usize {
+    if num_options == 0 {
+        return 0;
+    }
+    (round as usize) % num_options
+}
+
 impl GalacticCouncilMember for LlmBot {
     fn name(&self) -> &'static str {
         "llm-bot"
@@ -41,13 +48,18 @@ impl GalacticCouncilMember for LlmBot {
 
     fn vote(&self, event: &Event, galaxy: &GalaxyState) -> usize {
         let prompt = build_galactic_prompt(PERSONALITY, event, galaxy);
-        ollama_choose(
+        match ollama_choose(
             &self.config.host,
             &self.config.model,
             &prompt,
             event.options.len(),
-        )
-        .unwrap_or_default()
+        ) {
+            Ok(choice) => choice,
+            Err(e) => {
+                eprintln!("[llm-bot] LLM failed ({}), using fallback", e);
+                fallback_choice(galaxy.round, event.options.len())
+            }
+        }
     }
 }
 
@@ -83,5 +95,20 @@ mod tests {
         let (h, p) = parse_host("127.0.0.1").unwrap();
         assert_eq!(h, "127.0.0.1");
         assert_eq!(p, 11434);
+    }
+
+    // AC-7: llm-bot deterministic fallback
+    #[test]
+    fn test_fallback_cycles_by_round() {
+        use super::fallback_choice;
+        assert_eq!(fallback_choice(1, 3), 1);
+        assert_eq!(fallback_choice(2, 3), 2);
+        assert_eq!(fallback_choice(3, 3), 0);
+    }
+
+    #[test]
+    fn test_fallback_zero_options() {
+        use super::fallback_choice;
+        assert_eq!(fallback_choice(5, 0), 0);
     }
 }

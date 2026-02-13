@@ -1,7 +1,7 @@
 use contrarian_bot::ContrarianBot;
 use council_core::explorer::GalacticCouncilMember;
 use council_core::galaxy::GalaxyState;
-use council_core::ollama::OllamaConfig;
+use council_core::ollama::{can_connect, parse_host, OllamaConfig};
 use council_core::scoring::ScoreTracker;
 use council_core::voting::{calculate_vote_weight, resolve_votes, Vote};
 use council_core::{default_templates, generate_event};
@@ -85,30 +85,6 @@ fn parse_args() -> CliConfig {
     cfg
 }
 
-fn parse_host(host: &str) -> (&str, u16) {
-    let h = host.strip_prefix("http://").unwrap_or(host);
-    let mut parts = h.split(':');
-    let hostname = parts.next().unwrap_or("127.0.0.1");
-    let port = parts
-        .next()
-        .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(11434);
-    (hostname, port)
-}
-
-fn can_connect(host: &str) -> bool {
-    use std::net::{TcpStream, ToSocketAddrs};
-    use std::time::Duration;
-
-    let (h, p) = parse_host(host);
-    let addr = (h, p).to_socket_addrs().ok().and_then(|mut a| a.next());
-
-    match addr {
-        Some(a) => TcpStream::connect_timeout(&a, Duration::from_millis(300)).is_ok(),
-        None => false,
-    }
-}
-
 struct OllamaGuard {
     child: std::process::Child,
 }
@@ -133,7 +109,7 @@ fn maybe_spawn_ollama(cfg: &CliConfig) -> Option<OllamaGuard> {
         return None;
     }
 
-    let (h, p) = parse_host(&cfg.ollama_host);
+    let (h, p) = parse_host(&cfg.ollama_host).unwrap_or_else(|_| ("127.0.0.1".to_string(), 11434));
     let ollama_host_env = format!("{}:{}", h, p);
 
     let mut child = Command::new(&cfg.ollama_bin)

@@ -21,12 +21,19 @@ struct ChoiceJson {
     reason: Option<String>,
 }
 
-/// Parse a host string like "http://127.0.0.1:11434" or "127.0.0.1:11434"
-/// into (hostname, port). Defaults to port 11434.
+/// Parse a host string like "http://127.0.0.1:11434", "https://example.com:8080",
+/// or "127.0.0.1:11434" into (hostname, port). Defaults to port 11434.
+/// Returns Err on empty hostname or invalid port.
 pub fn parse_host(host: &str) -> Result<(String, u16), String> {
-    let h = host.strip_prefix("http://").unwrap_or(host);
+    let h = host
+        .strip_prefix("https://")
+        .or_else(|| host.strip_prefix("http://"))
+        .unwrap_or(host);
     let mut parts = h.split(':');
     let hostname = parts.next().ok_or("missing host")?.trim().to_string();
+    if hostname.is_empty() {
+        return Err("empty hostname".to_string());
+    }
     let port = parts
         .next()
         .unwrap_or("11434")
@@ -34,6 +41,28 @@ pub fn parse_host(host: &str) -> Result<(String, u16), String> {
         .parse::<u16>()
         .map_err(|_| "invalid port".to_string())?;
     Ok((hostname, port))
+}
+
+/// Parse an HTTP status line like "HTTP/1.1 200 OK" and return the status code
+/// for 2xx responses, or an error for non-2xx or malformed lines.
+pub fn parse_http_status(status_line: &str) -> Result<u16, String> {
+    let parts: Vec<&str> = status_line.splitn(3, ' ').collect();
+    if parts.len() < 2 {
+        return Err("invalid HTTP status line".to_string());
+    }
+    let code: u16 = parts[1]
+        .parse()
+        .map_err(|_| "invalid HTTP status code".to_string())?;
+    if (200..300).contains(&code) {
+        Ok(code)
+    } else {
+        let reason = if parts.len() >= 3 {
+            parts[2]
+        } else {
+            "Unknown"
+        };
+        Err(format!("HTTP error: {} {}", code, reason))
+    }
 }
 
 /// Extract the first JSON object `{...}` from a string that may contain
@@ -56,13 +85,74 @@ pub fn clamp_choice(choice: usize, len: usize) -> usize {
     }
 }
 
+/// Extract a choice index from an LLM response using multiple strategies:
+/// 1. JSON with integer choice field
+/// 2. JSON with string choice field
+/// 3. Bare integer scan
+///
+/// The result is clamped to valid bounds for the given number of options.
+pub fn extract_choice(response: &str, options_len: usize) -> Result<usize, String> {
+    // Strategy 1: Try JSON with integer choice: {"choice": 2}
+    if let Some(json_str) = extract_first_json_object(response) {
+        if let Ok(parsed) = serde_json::from_str::<ChoiceJson>(json_str) {
+            return Ok(clamp_choice(parsed.choice, options_len));
+        }
+        // Strategy 2: Try JSON with string choice: {"choice": "2"}
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+            if let Some(choice_str) = v.get("choice").and_then(|c| c.as_str()) {
+                if let Ok(n) = choice_str.parse::<usize>() {
+                    return Ok(clamp_choice(n, options_len));
+                }
+            }
+        }
+    }
+    // Strategy 3: Bare integer scan - find first digit
+    for word in response.split_whitespace() {
+        if let Ok(n) = word
+            .trim_matches(|c: char| !c.is_ascii_digit())
+            .parse::<usize>()
+        {
+            return Ok(clamp_choice(n, options_len));
+        }
+    }
+    Err("no valid choice found in response".to_string())
+}
+
+/// Check if an Ollama instance is reachable at the given host.
+pub fn can_connect(host: &str) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    let parsed = match parse_host(host) {
+        Ok((h, p)) => (h, p),
+        Err(_) => return false,
+    };
+    let addr = match (parsed.0.as_str(), parsed.1).to_socket_addrs() {
+        Ok(mut a) => match a.next() {
+            Some(a) => a,
+            None => return false,
+        },
+        Err(_) => return false,
+    };
+    TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
 /// Send a generate request to Ollama and return the response text.
+///
+/// Applies connection timeout (5s), read/write timeouts (30s), buffer limit (1MB),
+/// and validates HTTP status code.
 pub fn ollama_generate(host: &str, model: &str, prompt: &str) -> Result<String, String> {
     use std::io::{Read, Write};
-    use std::net::TcpStream;
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
 
     let (hostname, port) = parse_host(host)?;
-    let addr = format!("{}:{}", hostname, port);
+
+    let addr = (hostname.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|_| "failed to resolve host".to_string())?
+        .next()
+        .ok_or_else(|| "failed to resolve host".to_string())?;
 
     let body = serde_json::json!({
         "model": model,
@@ -71,7 +161,16 @@ pub fn ollama_generate(host: &str, model: &str, prompt: &str) -> Result<String, 
     })
     .to_string();
 
-    let mut stream = TcpStream::connect(addr).map_err(|e| e.to_string())?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        .map_err(|_| "connection failed".to_string())?;
+
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|_| "failed to set read timeout".to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(30)))
+        .map_err(|_| "failed to set write timeout".to_string())?;
+
     let req = format!(
         "POST /api/generate HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         hostname,
@@ -80,14 +179,24 @@ pub fn ollama_generate(host: &str, model: &str, prompt: &str) -> Result<String, 
     );
     stream
         .write_all(req.as_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "write failed".to_string())?;
 
     let mut raw = String::new();
-    stream.read_to_string(&mut raw).map_err(|e| e.to_string())?;
+    stream
+        .take(1_048_576)
+        .read_to_string(&mut raw)
+        .map_err(|_| "read failed".to_string())?;
 
-    let (_, body) = raw.split_once("\r\n\r\n").ok_or("invalid http response")?;
+    // Validate HTTP status from the first line
+    let first_line = raw
+        .lines()
+        .next()
+        .ok_or_else(|| "empty response".to_string())?;
+    parse_http_status(first_line)?;
 
-    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    let (_, body_str) = raw.split_once("\r\n\r\n").ok_or("invalid http response")?;
+
+    let v: serde_json::Value = serde_json::from_str(body_str).map_err(|e| e.to_string())?;
     let resp = v
         .get("response")
         .and_then(|x| x.as_str())
@@ -97,6 +206,9 @@ pub fn ollama_generate(host: &str, model: &str, prompt: &str) -> Result<String, 
 }
 
 /// Ask Ollama to choose among options. Returns a clamped index.
+///
+/// Uses multi-strategy parsing (JSON integer, JSON string, bare integer scan)
+/// to extract the choice from the LLM response.
 pub fn ollama_choose(
     host: &str,
     model: &str,
@@ -104,10 +216,7 @@ pub fn ollama_choose(
     options_len: usize,
 ) -> Result<usize, String> {
     let response = ollama_generate(host, model, prompt)?;
-
-    let json_str = extract_first_json_object(&response).ok_or("no json in response")?;
-    let parsed: ChoiceJson = serde_json::from_str(json_str).map_err(|e| e.to_string())?;
-    Ok(clamp_choice(parsed.choice, options_len))
+    extract_choice(&response, options_len)
 }
 
 /// Build a galactic event prompt with a personality prefix.
@@ -255,5 +364,86 @@ mod tests {
         assert!(prompt.contains("sev=5"));
         assert!(prompt.contains("ROUND:"));
         assert!(prompt.contains("SECTORS:"));
+    }
+
+    // AC-1: parse_host() handles https:// prefix, empty string returns Err, port 0 valid
+    #[test]
+    fn test_parse_host_strips_https_prefix() {
+        let (h, p) = parse_host("https://example.com:8080").unwrap();
+        assert_eq!(h, "example.com");
+        assert_eq!(p, 8080);
+    }
+
+    #[test]
+    fn test_parse_host_empty_string_is_err() {
+        assert!(parse_host("").is_err());
+    }
+
+    #[test]
+    fn test_parse_host_port_zero() {
+        let (h, p) = parse_host("localhost:0").unwrap();
+        assert_eq!(h, "localhost");
+        assert_eq!(p, 0);
+    }
+
+    // AC-4: HTTP status code validation
+    #[test]
+    fn test_parse_http_status_200_ok() {
+        assert_eq!(parse_http_status("HTTP/1.1 200 OK").unwrap(), 200);
+    }
+
+    #[test]
+    fn test_parse_http_status_404_err() {
+        let err = parse_http_status("HTTP/1.1 404 Not Found").unwrap_err();
+        assert!(err.contains("404"));
+    }
+
+    #[test]
+    fn test_parse_http_status_500_err() {
+        let err = parse_http_status("HTTP/1.1 500 Internal Server Error").unwrap_err();
+        assert!(err.contains("500"));
+    }
+
+    #[test]
+    fn test_parse_http_status_malformed() {
+        assert!(parse_http_status("garbage").is_err());
+    }
+
+    // AC-5: Multi-strategy choice extraction
+    #[test]
+    fn test_extract_choice_integer() {
+        assert_eq!(
+            extract_choice("{\"choice\": 2, \"reason\": \"ok\"}", 4).unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn test_extract_choice_string() {
+        assert_eq!(
+            extract_choice("{\"choice\": \"2\", \"reason\": \"ok\"}", 4).unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn test_extract_choice_bare_integer() {
+        assert_eq!(extract_choice("I pick option 2 because", 4).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_extract_choice_clamped() {
+        assert_eq!(extract_choice("{\"choice\": 99}", 3).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_extract_choice_empty_err() {
+        assert!(extract_choice("", 3).is_err());
+    }
+
+    // AC-6: can_connect() moved to council-core
+    #[test]
+    fn test_can_connect_unreachable() {
+        assert!(!can_connect("192.0.2.1:1"));
     }
 }
