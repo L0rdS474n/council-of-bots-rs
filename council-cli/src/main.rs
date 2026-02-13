@@ -18,22 +18,32 @@ struct CliConfig {
     enable_llm_bot: bool,
     ollama_host: String,
     ollama_model: String,
+    spawn_ollama: bool,
+    ollama_bin: String,
 }
 
 fn parse_args() -> CliConfig {
     // Minimal, dependency-free arg parsing.
     // Example:
-    //   cargo run -p council-cli -- --enable-llm-bot --ollama-host 127.0.0.1:11434 --ollama-model llama3
+    //   cargo run -p council-cli -- --enable-llm-bot --spawn-ollama --ollama-host 127.0.0.1:11434 --ollama-model llama3
     let mut cfg = CliConfig {
         enable_llm_bot: false,
         ollama_host: "127.0.0.1:11434".to_string(),
         ollama_model: "llama3".to_string(),
+        spawn_ollama: false,
+        ollama_bin: "ollama".to_string(),
     };
 
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--enable-llm-bot" => cfg.enable_llm_bot = true,
+            "--spawn-ollama" => cfg.spawn_ollama = true,
+            "--ollama-bin" => {
+                if let Some(v) = it.next() {
+                    cfg.ollama_bin = v;
+                }
+            }
             "--ollama-host" => {
                 if let Some(v) = it.next() {
                     cfg.ollama_host = v;
@@ -45,7 +55,9 @@ fn parse_args() -> CliConfig {
                 }
             }
             "--help" | "-h" => {
-                println!("council-cli\n\nFlags:\n  --enable-llm-bot\n  --ollama-host <host:port> (default 127.0.0.1:11434)\n  --ollama-model <model> (default llama3)\n");
+                println!(
+                    "council-cli\n\nFlags:\n  --enable-llm-bot\n  --spawn-ollama (start/stop ollama automatically for this run)\n  --ollama-bin <path> (default ollama)\n  --ollama-host <host:port> (default 127.0.0.1:11434)\n  --ollama-model <model> (default llama3)\n"
+                );
                 std::process::exit(0);
             }
             _ => {}
@@ -53,6 +65,79 @@ fn parse_args() -> CliConfig {
     }
 
     cfg
+}
+
+fn parse_host(host: &str) -> (&str, u16) {
+    let h = host.strip_prefix("http://").unwrap_or(host);
+    let mut parts = h.split(':');
+    let hostname = parts.next().unwrap_or("127.0.0.1");
+    let port = parts
+        .next()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(11434);
+    (hostname, port)
+}
+
+fn can_connect(host: &str) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    let (h, p) = parse_host(host);
+    let addr = (h, p).to_socket_addrs().ok().and_then(|mut a| a.next());
+
+    match addr {
+        Some(a) => TcpStream::connect_timeout(&a, Duration::from_millis(300)).is_ok(),
+        None => false,
+    }
+}
+
+struct OllamaGuard {
+    child: std::process::Child,
+}
+
+impl Drop for OllamaGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn maybe_spawn_ollama(cfg: &CliConfig) -> Option<OllamaGuard> {
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    if !cfg.spawn_ollama {
+        return None;
+    }
+
+    if can_connect(&cfg.ollama_host) {
+        return None;
+    }
+
+    let (h, p) = parse_host(&cfg.ollama_host);
+    let ollama_host_env = format!("{}:{}", h, p);
+
+    let mut child = Command::new(&cfg.ollama_bin)
+        .arg("serve")
+        .env("OLLAMA_HOST", ollama_host_env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(8) {
+        if can_connect(&cfg.ollama_host) {
+            return Some(OllamaGuard { child });
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    None
 }
 
 fn main() {
@@ -65,6 +150,8 @@ fn main() {
         Box::new(ContrarianBot),
         Box::new(OracleBot),
     ];
+
+    let _ollama_guard = maybe_spawn_ollama(&cfg);
 
     if cfg.enable_llm_bot {
         bots.push(Box::new(LlmBot::new(cfg.ollama_host, cfg.ollama_model)));
