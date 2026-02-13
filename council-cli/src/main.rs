@@ -11,10 +11,11 @@ use llm_bot::LlmBot;
 use oracle_bot::OracleBot;
 use rand::SeedableRng;
 
-const TOTAL_ROUNDS: u32 = 25;
+const DEFAULT_ROUNDS: u32 = 25;
 
 #[derive(Debug, Clone, Default)]
 struct CliConfig {
+    rounds: u32,
     enable_llm_bot: bool,
     ollama_host: String,
     ollama_model: String,
@@ -27,6 +28,7 @@ fn parse_args() -> CliConfig {
     // Example:
     //   cargo run -p council-cli -- --enable-llm-bot --spawn-ollama --ollama-host 127.0.0.1:11434 --ollama-model llama3
     let mut cfg = CliConfig {
+        rounds: DEFAULT_ROUNDS,
         enable_llm_bot: false,
         ollama_host: "127.0.0.1:11434".to_string(),
         ollama_model: "llama3".to_string(),
@@ -37,6 +39,18 @@ fn parse_args() -> CliConfig {
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
+            "--rounds" => {
+                let Some(v) = it.next() else {
+                    eprintln!("--rounds requires a number");
+                    std::process::exit(2);
+                };
+                let rounds = v.parse::<u32>().unwrap_or(0);
+                if rounds == 0 {
+                    eprintln!("--rounds must be >= 1");
+                    std::process::exit(2);
+                }
+                cfg.rounds = rounds;
+            }
             "--enable-llm-bot" => cfg.enable_llm_bot = true,
             "--spawn-ollama" => cfg.spawn_ollama = true,
             "--ollama-bin" => {
@@ -56,7 +70,7 @@ fn parse_args() -> CliConfig {
             }
             "--help" | "-h" => {
                 println!(
-                    "council-cli\n\nFlags:\n  --enable-llm-bot\n  --spawn-ollama (start/stop ollama automatically for this run)\n  --ollama-bin <path> (default ollama)\n  --ollama-host <host:port> (default 127.0.0.1:11434)\n  --ollama-model <model> (default llama3)\n"
+                    "council-cli\n\nFlags:\n  --rounds <n> (default 25)\n  --enable-llm-bot\n  --spawn-ollama (start/stop ollama automatically for this run)\n  --ollama-bin <path> (default ollama)\n  --ollama-host <host:port> (default 127.0.0.1:11434)\n  --ollama-model <model> (default llama3)\n"
                 );
                 std::process::exit(0);
             }
@@ -173,16 +187,16 @@ fn main() {
     let mut score = ScoreTracker::new();
     let mut rng = rand::rngs::StdRng::from_entropy();
 
-    print_banner();
+    print_banner(cfg.rounds, bots.len() as u32);
 
-    for round in 1..=TOTAL_ROUNDS {
+    for round in 1..=cfg.rounds {
         galaxy.round = round;
 
         println!();
         println!("╔══════════════════════════════════════════════════════════════╗");
         println!(
             "║  ROUND {:>2} / {}                                              ║",
-            round, TOTAL_ROUNDS
+            round, cfg.rounds
         );
         println!("╚══════════════════════════════════════════════════════════════╝");
 
@@ -258,7 +272,7 @@ fn main() {
     print_final_report(&galaxy, &score, &bots);
 }
 
-fn print_banner() {
+fn print_banner(rounds: u32, members: u32) {
     println!();
     println!(r"     ___       __         __  _         ___                  _ __");
     println!(r"    / _ \___ _/ /__ _____/ /_(_)___    / __/___  __ _____  / / /");
@@ -267,8 +281,8 @@ fn print_banner() {
     println!();
     println!("  === GALACTIC COUNCIL EXPLORATION SIMULATION ===");
     println!(
-        "  {} rounds | 5 council members | Infinite possibilities",
-        TOTAL_ROUNDS
+        "  {} rounds | {} council members | Infinite possibilities",
+        rounds, members
     );
     println!();
 }
