@@ -154,6 +154,17 @@ fn main() {
     let _ollama_guard = maybe_spawn_ollama(&cfg);
 
     if cfg.enable_llm_bot {
+        if !can_connect(&cfg.ollama_host) {
+            eprintln!(
+                "llm-bot enabled but Ollama is not reachable at {}.\n\
+                 - If you want council-cli to manage Ollama automatically: add --spawn-ollama\n\
+                 - Otherwise start it yourself (e.g. `ollama serve`) and ensure the model exists.\n\
+                 - You can change the path with --ollama-bin and endpoint with --ollama-host",
+                cfg.ollama_host
+            );
+            std::process::exit(2);
+        }
+
         bots.push(Box::new(LlmBot::new(cfg.ollama_host, cfg.ollama_model)));
     }
 
