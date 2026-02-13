@@ -7,6 +7,7 @@ use std::fmt;
 pub mod event;
 pub mod explorer;
 pub mod galaxy;
+pub mod ollama;
 pub mod scoring;
 pub mod templates;
 pub mod voting;
