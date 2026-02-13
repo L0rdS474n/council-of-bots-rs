@@ -708,6 +708,145 @@ impl EventTemplate for DiplomaticRequestTemplate {
     }
 }
 
+/// A known species proposes a cultural exchange program.
+pub struct CulturalExchangeTemplate;
+
+impl EventTemplate for CulturalExchangeTemplate {
+    fn name(&self) -> &'static str {
+        "Cultural Exchange"
+    }
+
+    fn is_applicable(&self, galaxy: &GalaxyState) -> bool {
+        // Cultural exchange only makes sense if we've met someone and we're not openly at war.
+        galaxy.known_species.iter().any(|s| {
+            !matches!(
+                galaxy
+                    .relations
+                    .get(&s.name)
+                    .copied()
+                    .unwrap_or(Relation::Unknown),
+                Relation::Hostile
+            )
+        })
+    }
+
+    fn weight(&self) -> u32 {
+        7
+    }
+
+    fn generate(&self, galaxy: &GalaxyState, rng: &mut dyn RngCore) -> Event {
+        // Pick a non-hostile species if possible; fallback to any known species.
+        let candidates: Vec<_> = galaxy
+            .known_species
+            .iter()
+            .filter(|s| {
+                !matches!(
+                    galaxy
+                        .relations
+                        .get(&s.name)
+                        .copied()
+                        .unwrap_or(Relation::Unknown),
+                    Relation::Hostile
+                )
+            })
+            .collect();
+
+        let chosen = if candidates.is_empty() {
+            &galaxy.known_species[rng.next_u32() as usize % galaxy.known_species.len()]
+        } else {
+            candidates[rng.next_u32() as usize % candidates.len()]
+        };
+
+        let species_name = &chosen.name;
+        let current_relation = galaxy
+            .relations
+            .get(species_name)
+            .copied()
+            .unwrap_or(Relation::Unknown);
+
+        let full_exchange = improve_relation(current_relation);
+        let limited_exchange = current_relation;
+        let decline_relation = degrade_relation(current_relation);
+
+        let discovery = format!("{} Cultural Lexicon", species_name);
+        let mishap = rng.next_u32().is_multiple_of(6);
+
+        Event {
+            description: format!(
+                "The {} invite us to a structured cultural exchange: language mapping, art archives, and diplomatic protocol training. Current relations are {:?}.",
+                species_name, current_relation
+            ),
+            relevant_expertise: vec![
+                ("culture".to_string(), 0.4),
+                ("diplomacy".to_string(), 0.4),
+                ("science".to_string(), 0.2),
+            ],
+            options: vec![
+                ResponseOption {
+                    description: "Commit fully — exchange scholars and share archives".to_string(),
+                    outcome: if mishap {
+                        Outcome {
+                            description: "A translation mishap causes offense during the exchange. Relations cool despite useful insights."
+                                .to_string(),
+                            score_delta: 2,
+                            state_changes: vec![
+                                StateChange::AddDiscovery(Discovery {
+                                    name: discovery.clone(),
+                                    category: "culture".to_string(),
+                                }),
+                                StateChange::SetRelation {
+                                    species: species_name.clone(),
+                                    relation: degrade_relation(full_exchange),
+                                },
+                            ],
+                        }
+                    } else {
+                        Outcome {
+                            description: format!(
+                                "The exchange succeeds. We compile the {} and relations improve.",
+                                discovery
+                            ),
+                            score_delta: 10,
+                            state_changes: vec![
+                                StateChange::AddDiscovery(Discovery {
+                                    name: discovery.clone(),
+                                    category: "culture".to_string(),
+                                }),
+                                StateChange::SetRelation {
+                                    species: species_name.clone(),
+                                    relation: full_exchange,
+                                },
+                            ],
+                        }
+                    },
+                },
+                ResponseOption {
+                    description: "Accept cautiously — run a limited exchange".to_string(),
+                    outcome: Outcome {
+                        description: "A small exchange program runs smoothly. Incremental trust is built.".to_string(),
+                        score_delta: 5,
+                        state_changes: vec![StateChange::SetRelation {
+                            species: species_name.clone(),
+                            relation: limited_exchange,
+                        }],
+                    },
+                },
+                ResponseOption {
+                    description: "Decline — focus on strategic priorities".to_string(),
+                    outcome: Outcome {
+                        description: "We politely decline. The relationship suffers from the missed opportunity.".to_string(),
+                        score_delta: -1,
+                        state_changes: vec![StateChange::SetRelation {
+                            species: species_name.clone(),
+                            relation: decline_relation,
+                        }],
+                    },
+                },
+            ],
+        }
+    }
+}
+
 // ============================================================================
 // Research Templates
 // ============================================================================
@@ -796,6 +935,7 @@ pub fn default_templates() -> Vec<Box<dyn EventTemplate>> {
         Box::new(ThreatEmergenceTemplate),
         Box::new(ArtifactTemplate),
         Box::new(DiplomaticRequestTemplate),
+        Box::new(CulturalExchangeTemplate),
         Box::new(TechBreakthroughTemplate),
     ]
 }
@@ -1034,6 +1174,78 @@ mod tests {
     }
 
     // ====================================================================
+    // CulturalExchangeTemplate tests
+    // ====================================================================
+
+    #[test]
+    fn cultural_exchange_applicable_with_non_hostile_species() {
+        let template = CulturalExchangeTemplate;
+        let mut galaxy = GalaxyState::new();
+
+        assert!(!template.is_applicable(&galaxy));
+
+        galaxy.known_species.push(Species {
+            name: "Veloni".to_string(),
+            traits: vec!["curious".to_string()],
+        });
+        galaxy
+            .relations
+            .insert("Veloni".to_string(), Relation::Neutral);
+
+        assert!(template.is_applicable(&galaxy));
+
+        // If all species are hostile, exchange should not be applicable.
+        let mut hostile_only = GalaxyState::new();
+        hostile_only.known_species.push(Species {
+            name: "Draix".to_string(),
+            traits: vec!["aggressive".to_string()],
+        });
+        hostile_only
+            .relations
+            .insert("Draix".to_string(), Relation::Hostile);
+        assert!(!template.is_applicable(&hostile_only));
+    }
+
+    #[test]
+    fn cultural_exchange_has_correct_weight() {
+        let template = CulturalExchangeTemplate;
+        assert_eq!(template.weight(), 7);
+    }
+
+    #[test]
+    fn cultural_exchange_generates_relation_changes_and_discovery() {
+        let template = CulturalExchangeTemplate;
+        let mut galaxy = GalaxyState::new();
+        galaxy.known_species.push(Species {
+            name: "Qoreki".to_string(),
+            traits: vec!["peaceful".to_string()],
+        });
+        galaxy
+            .relations
+            .insert("Qoreki".to_string(), Relation::Wary);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1234);
+
+        let event = template.generate(&galaxy, &mut rng);
+        assert_eq!(event.options.len(), 3);
+
+        for option in &event.options {
+            let has_set_relation = option
+                .outcome
+                .state_changes
+                .iter()
+                .any(|c| matches!(c, StateChange::SetRelation { .. }));
+            assert!(has_set_relation);
+        }
+
+        let option0_has_discovery = event.options[0]
+            .outcome
+            .state_changes
+            .iter()
+            .any(|c| matches!(c, StateChange::AddDiscovery(_)));
+        assert!(option0_has_discovery);
+    }
+
+    // ====================================================================
     // TechBreakthroughTemplate tests
     // ====================================================================
 
@@ -1105,7 +1317,8 @@ mod tests {
         let names: Vec<&str> = templates.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"Derelict Vessel"));
         assert!(names.contains(&"Diplomatic Request"));
+        assert!(names.contains(&"Cultural Exchange"));
         assert!(names.contains(&"Tech Breakthrough"));
-        assert_eq!(templates.len(), 8);
+        assert_eq!(templates.len(), 9);
     }
 }
