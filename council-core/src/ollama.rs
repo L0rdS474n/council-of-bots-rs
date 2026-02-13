@@ -7,11 +7,28 @@ use crate::event::Event;
 use crate::galaxy::GalaxyState;
 use serde::Deserialize;
 
-/// Configuration for connecting to an Ollama instance.
+/// LLM backend API type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmApi {
+    /// Ollama native API (`POST /api/generate`).
+    Ollama,
+    /// OpenAI-compatible Chat Completions (`POST /v1/chat/completions`).
+    /// Used by LM Studio local server.
+    OpenAiChatCompletions,
+}
+
+/// Configuration for connecting to an LLM endpoint.
 #[derive(Debug, Clone)]
 pub struct OllamaConfig {
+    /// Endpoint host/url.
+    ///
+    /// - `LlmApi::Ollama`: accepts `127.0.0.1:11434` or `http://127.0.0.1:11434`.
+    /// - `LlmApi::OpenAiChatCompletions`: accepts `http://127.0.0.1:1234/v1`.
     pub host: String,
     pub model: String,
+    pub api: LlmApi,
+    /// Optional API key (LM Studio often accepts any value).
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -24,6 +41,9 @@ struct ChoiceJson {
 /// Parse a host string like "http://127.0.0.1:11434", "https://example.com:8080",
 /// or "127.0.0.1:11434" into (hostname, port). Defaults to port 11434.
 /// Returns Err on empty hostname or invalid port.
+///
+/// Note: This helper is intended for host:port style endpoints (Ollama).
+/// For URLs with paths (LM Studio OpenAI-compatible), use `parse_http_url`.
 pub fn parse_host(host: &str) -> Result<(String, u16), String> {
     let h = host
         .strip_prefix("https://")
@@ -41,6 +61,46 @@ pub fn parse_host(host: &str) -> Result<(String, u16), String> {
         .parse::<u16>()
         .map_err(|_| "invalid port".to_string())?;
     Ok((hostname, port))
+}
+
+/// Parse an HTTP url (http only) into (hostname, port, path_prefix).
+///
+/// Accepts:
+/// - `http://127.0.0.1:1234/v1`
+/// - `127.0.0.1:1234/v1`
+/// - `127.0.0.1:1234`
+///
+/// Notes:
+/// - `https://` is rejected (no TLS in this minimal client).
+/// - `path_prefix` is empty or starts with `/`.
+pub fn parse_http_url(url: &str) -> Result<(String, u16, String), String> {
+    if url.trim().is_empty() {
+        return Err("empty url".to_string());
+    }
+
+    if url.starts_with("https://") {
+        return Err("https not supported".to_string());
+    }
+
+    let u = url.strip_prefix("http://").unwrap_or(url);
+    let (hostport, path) = match u.split_once('/') {
+        Some((a, b)) => (a, format!("/{}", b)),
+        None => (u, "".to_string()),
+    };
+
+    let mut parts = hostport.split(':');
+    let hostname = parts.next().unwrap_or("").trim().to_string();
+    if hostname.is_empty() {
+        return Err("missing host".to_string());
+    }
+    let port = parts
+        .next()
+        .unwrap_or("80")
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| "invalid port".to_string())?;
+
+    Ok((hostname, port, path))
 }
 
 /// Parse an HTTP status line like "HTTP/1.1 200 OK" and return the status code
@@ -118,7 +178,7 @@ pub fn extract_choice(response: &str, options_len: usize) -> Result<usize, Strin
     Err("no valid choice found in response".to_string())
 }
 
-/// Check if an Ollama instance is reachable at the given host.
+/// Check if an Ollama instance is reachable at the given host (host:port style).
 pub fn can_connect(host: &str) -> bool {
     use std::net::{TcpStream, ToSocketAddrs};
     use std::time::Duration;
@@ -135,6 +195,33 @@ pub fn can_connect(host: &str) -> bool {
         Err(_) => return false,
     };
     TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
+/// Check if an HTTP endpoint (http only) is reachable.
+pub fn can_connect_http(url: &str) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    let parsed = match parse_http_url(url) {
+        Ok((h, p, _)) => (h, p),
+        Err(_) => return false,
+    };
+    let addr = match (parsed.0.as_str(), parsed.1).to_socket_addrs() {
+        Ok(mut a) => match a.next() {
+            Some(a) => a,
+            None => return false,
+        },
+        Err(_) => return false,
+    };
+    TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
+/// Check if an LLM endpoint is reachable based on its configured API.
+pub fn can_connect_llm(cfg: &OllamaConfig) -> bool {
+    match cfg.api {
+        LlmApi::Ollama => can_connect(&cfg.host),
+        LlmApi::OpenAiChatCompletions => can_connect_http(&cfg.host),
+    }
 }
 
 /// Send a generate request to Ollama and return the response text.
@@ -203,6 +290,209 @@ pub fn ollama_generate(host: &str, model: &str, prompt: &str) -> Result<String, 
         .ok_or("missing response field")?;
 
     Ok(resp.to_string())
+}
+
+fn normalize_openai_path_prefix(prefix: &str) -> String {
+    let p = prefix.trim();
+    if p.is_empty() {
+        return "/v1".to_string();
+    }
+    if p == "/" {
+        return "/v1".to_string();
+    }
+    p.trim_end_matches('/').to_string()
+}
+
+fn build_openai_chat_path(prefix: &str) -> String {
+    let base = normalize_openai_path_prefix(prefix);
+    if base.ends_with("/chat/completions") {
+        base
+    } else {
+        format!("{}/chat/completions", base)
+    }
+}
+
+fn decode_chunked(body: &str) -> Result<String, String> {
+    // Very small, non-streaming chunked decoder for JSON bodies.
+    let mut out = String::new();
+    let mut i = 0;
+    let bytes = body.as_bytes();
+
+    while i < bytes.len() {
+        // Read chunk size line
+        let mut j = i;
+        while j + 1 < bytes.len() && !(bytes[j] == b'\r' && bytes[j + 1] == b'\n') {
+            j += 1;
+        }
+        if j + 1 >= bytes.len() {
+            return Err("invalid chunked encoding".to_string());
+        }
+        let size_line = &body[i..j];
+        let size_hex = size_line.split(';').next().unwrap_or("").trim();
+        let size =
+            usize::from_str_radix(size_hex, 16).map_err(|_| "invalid chunk size".to_string())?;
+        i = j + 2; // skip \r\n
+
+        if size == 0 {
+            break;
+        }
+        if i + size > bytes.len() {
+            return Err("chunk exceeds body length".to_string());
+        }
+        out.push_str(&body[i..i + size]);
+        i += size;
+
+        // skip trailing \r\n
+        if i + 1 < bytes.len() && bytes[i] == b'\r' && bytes[i + 1] == b'\n' {
+            i += 2;
+        }
+    }
+
+    Ok(out)
+}
+
+fn openai_extract_content(body_str: &str) -> Result<String, String> {
+    let v: serde_json::Value = serde_json::from_str(body_str).map_err(|e| e.to_string())?;
+    // Chat completions: choices[0].message.content
+    if let Some(s) = v
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|x| x.as_str())
+    {
+        return Ok(s.to_string());
+    }
+    // Fallback: choices[0].text
+    if let Some(s) = v
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("text"))
+        .and_then(|x| x.as_str())
+    {
+        return Ok(s.to_string());
+    }
+    Err("missing choices[0] content".to_string())
+}
+
+/// Send a Chat Completions request to an OpenAI-compatible endpoint (LM Studio).
+///
+/// `base_url` should normally include `/v1` (for example: `http://127.0.0.1:1234/v1`).
+pub fn openai_chat_generate(
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    use std::io::{Read, Write};
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    let (hostname, port, prefix) = parse_http_url(base_url)?;
+    let path = build_openai_chat_path(&prefix);
+
+    let addr = (hostname.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|_| "failed to resolve host".to_string())?
+        .next()
+        .ok_or_else(|| "failed to resolve host".to_string())?;
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "stream": false,
+        "temperature": 0
+    })
+    .to_string();
+
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        .map_err(|_| "connection failed".to_string())?;
+
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|_| "failed to set read timeout".to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(30)))
+        .map_err(|_| "failed to set write timeout".to_string())?;
+
+    let mut auth_header = String::new();
+    if let Some(k) = api_key {
+        let k = k.trim();
+        if !k.is_empty() {
+            auth_header = format!("Authorization: Bearer {}\r\n", k);
+        }
+    }
+
+    let req = format!(
+        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+        path,
+        hostname,
+        auth_header,
+        body.len(),
+        body
+    );
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|_| "write failed".to_string())?;
+
+    let mut raw = String::new();
+    stream
+        .take(2_097_152)
+        .read_to_string(&mut raw)
+        .map_err(|_| "read failed".to_string())?;
+
+    let (hdrs, body_str) = raw.split_once("\r\n\r\n").ok_or("invalid http response")?;
+
+    let first_line = hdrs
+        .lines()
+        .next()
+        .ok_or_else(|| "empty response".to_string())?;
+    parse_http_status(first_line)?;
+
+    let is_chunked = hdrs.lines().any(|l| {
+        l.to_ascii_lowercase().starts_with("transfer-encoding:")
+            && l.to_ascii_lowercase().contains("chunked")
+    });
+
+    let final_body = if is_chunked {
+        decode_chunked(body_str)?
+    } else {
+        body_str.to_string()
+    };
+
+    openai_extract_content(&final_body)
+}
+
+/// Generate a response using either Ollama or an OpenAI-compatible endpoint.
+pub fn llm_generate(cfg: &OllamaConfig, prompt: &str) -> Result<String, String> {
+    match cfg.api {
+        LlmApi::Ollama => ollama_generate(&cfg.host, &cfg.model, prompt),
+        LlmApi::OpenAiChatCompletions => {
+            openai_chat_generate(&cfg.host, cfg.api_key.as_deref(), &cfg.model, prompt)
+        }
+    }
+}
+
+/// Choose among options using either Ollama or an OpenAI-compatible endpoint.
+pub fn llm_choose(cfg: &OllamaConfig, prompt: &str, options_len: usize) -> Result<usize, String> {
+    let response = llm_generate(cfg, prompt)?;
+    extract_choice(&response, options_len)
+}
+
+/// Deliberate (comment + preferred choice) using either backend.
+pub fn llm_deliberate(
+    cfg: &OllamaConfig,
+    personality: &str,
+    event: &Event,
+    galaxy: &GalaxyState,
+) -> Result<(usize, String), String> {
+    let prompt = build_deliberation_prompt(personality, event, galaxy);
+    let response = llm_generate(cfg, &prompt)?;
+    let choice = extract_choice(&response, event.options.len())?;
+    let comment = extract_comment(&response).unwrap_or_else(|| "(no comment)".to_string());
+    Ok((choice, comment))
 }
 
 /// Ask Ollama to choose among options. Returns a clamped index.

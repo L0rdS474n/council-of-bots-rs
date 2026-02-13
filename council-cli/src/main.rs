@@ -1,7 +1,7 @@
 use contrarian_bot::ContrarianBot;
 use council_core::explorer::GalacticCouncilMember;
 use council_core::galaxy::GalaxyState;
-use council_core::ollama::{can_connect, parse_host, OllamaConfig};
+use council_core::ollama::{can_connect, can_connect_llm, parse_host, LlmApi, OllamaConfig};
 use council_core::scoring::ScoreTracker;
 use council_core::voting::{calculate_vote_weight, resolve_votes, Vote};
 use council_core::{default_templates, generate_event};
@@ -20,6 +20,12 @@ struct CliConfig {
     enable_llm: bool,
     enable_llm_bot: bool,
     deliberate: bool,
+
+    llm_provider: String,
+    llm_base_url: String,
+    llm_model: String,
+    llm_api_key: String,
+
     ollama_host: String,
     ollama_model: String,
     spawn_ollama: bool,
@@ -35,6 +41,12 @@ fn parse_args() -> CliConfig {
         enable_llm: false,
         enable_llm_bot: false,
         deliberate: false,
+
+        llm_provider: "ollama".to_string(),
+        llm_base_url: "http://127.0.0.1:1234/v1".to_string(),
+        llm_model: "".to_string(),
+        llm_api_key: "".to_string(),
+
         ollama_host: "127.0.0.1:11434".to_string(),
         ollama_model: "llama3".to_string(),
         spawn_ollama: false,
@@ -59,6 +71,26 @@ fn parse_args() -> CliConfig {
             "--enable-llm" => cfg.enable_llm = true,
             "--enable-llm-bot" => cfg.enable_llm_bot = true,
             "--deliberate" => cfg.deliberate = true,
+            "--llm-provider" => {
+                if let Some(v) = it.next() {
+                    cfg.llm_provider = v;
+                }
+            }
+            "--llm-base-url" => {
+                if let Some(v) = it.next() {
+                    cfg.llm_base_url = v;
+                }
+            }
+            "--llm-model" => {
+                if let Some(v) = it.next() {
+                    cfg.llm_model = v;
+                }
+            }
+            "--llm-api-key" => {
+                if let Some(v) = it.next() {
+                    cfg.llm_api_key = v;
+                }
+            }
             "--spawn-ollama" => cfg.spawn_ollama = true,
             "--ollama-bin" => {
                 if let Some(v) = it.next() {
@@ -77,7 +109,7 @@ fn parse_args() -> CliConfig {
             }
             "--help" | "-h" => {
                 println!(
-                    "council-cli\n\nFlags:\n  --rounds <n>          Number of rounds (default: 25)\n  --enable-llm          Give all 5 bots unique LLM personalities via Ollama\n  --enable-llm-bot      Add a 6th dedicated LLM bot to the council\n  --deliberate          Let bots publish short comments before the final vote\n  --spawn-ollama        Start/stop Ollama automatically for this run\n  --ollama-bin <path>   Path to ollama binary (default: ollama)\n  --ollama-host <host:port>  Ollama endpoint (default: 127.0.0.1:11434)\n  --ollama-model <model>     LLM model name (default: llama3)\n"
+                    "council-cli\n\nFlags:\n  --rounds <n>          Number of rounds (default: 25)\n  --enable-llm          Give all 5 bots unique LLM personalities via a local LLM\n  --enable-llm-bot      Add a 6th dedicated LLM bot to the council\n  --deliberate          Let bots publish short comments before the final vote\n\n  --llm-provider <ollama|lmstudio>  Which local LLM API to use (default: ollama)\n  --llm-base-url <url>   LM Studio base URL (default: http://127.0.0.1:1234/v1)\n  --llm-model <model>    LM Studio model id (defaults to --ollama-model if unset)\n  --llm-api-key <key>    Optional API key (LM Studio often accepts any value)\n\n  --spawn-ollama        Start/stop Ollama automatically for this run (ollama only)\n  --ollama-bin <path>   Path to ollama binary (default: ollama)\n  --ollama-host <host:port>  Ollama endpoint (default: 127.0.0.1:11434)\n  --ollama-model <model>     Model name (default: llama3)\n"
                 );
                 std::process::exit(0);
             }
@@ -137,39 +169,97 @@ fn maybe_spawn_ollama(cfg: &CliConfig) -> Option<OllamaGuard> {
     None
 }
 
+fn resolve_llm_config(cfg: &CliConfig) -> Result<OllamaConfig, String> {
+    let provider = cfg.llm_provider.trim().to_ascii_lowercase();
+    match provider.as_str() {
+        "ollama" => Ok(OllamaConfig {
+            host: cfg.ollama_host.clone(),
+            model: cfg.ollama_model.clone(),
+            api: LlmApi::Ollama,
+            api_key: None,
+        }),
+        "lmstudio" | "lm-studio" | "lm_studio" => {
+            let model = if cfg.llm_model.trim().is_empty() {
+                cfg.ollama_model.clone()
+            } else {
+                cfg.llm_model.clone()
+            };
+            Ok(OllamaConfig {
+                host: cfg.llm_base_url.clone(),
+                model,
+                api: LlmApi::OpenAiChatCompletions,
+                api_key: if cfg.llm_api_key.trim().is_empty() {
+                    None
+                } else {
+                    Some(cfg.llm_api_key.clone())
+                },
+            })
+        }
+        _ => Err(format!(
+            "unknown --llm-provider '{}'. Use 'ollama' or 'lmstudio'",
+            cfg.llm_provider
+        )),
+    }
+}
+
 fn main() {
     let cfg = parse_args();
 
-    let needs_ollama = cfg.enable_llm || cfg.enable_llm_bot;
+    let needs_llm = cfg.enable_llm || cfg.enable_llm_bot;
+    let llm_cfg = if needs_llm {
+        match resolve_llm_config(&cfg) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("{}", e);
+                std::process::exit(2);
+            }
+        }
+    } else {
+        // Not used.
+        OllamaConfig {
+            host: cfg.ollama_host.clone(),
+            model: cfg.ollama_model.clone(),
+            api: LlmApi::Ollama,
+            api_key: None,
+        }
+    };
 
-    let _ollama_guard = if needs_ollama {
+    let _ollama_guard = if needs_llm && llm_cfg.api == LlmApi::Ollama {
         maybe_spawn_ollama(&cfg)
     } else {
         None
     };
 
-    if needs_ollama && !can_connect(&cfg.ollama_host) {
-        eprintln!(
-            "LLM mode enabled but Ollama is not reachable at {}.\n\
-             - If you want council-cli to manage Ollama automatically: add --spawn-ollama\n\
-             - Otherwise start it yourself (e.g. `ollama serve`) and ensure the model exists.\n\
-             - You can change the path with --ollama-bin and endpoint with --ollama-host",
-            cfg.ollama_host
-        );
+    if needs_llm && !can_connect_llm(&llm_cfg) {
+        match llm_cfg.api {
+            LlmApi::Ollama => {
+                eprintln!(
+                    "LLM mode enabled but Ollama is not reachable at {}.\n\
+                     - If you want council-cli to manage Ollama automatically: add --spawn-ollama\n\
+                     - Otherwise start it yourself (e.g. `ollama serve`) and ensure the model exists.\n\
+                     - You can change the path with --ollama-bin and endpoint with --ollama-host",
+                    cfg.ollama_host
+                );
+            }
+            LlmApi::OpenAiChatCompletions => {
+                eprintln!(
+                    "LLM mode enabled but LM Studio (OpenAI-compatible) is not reachable at {}.\n\
+                     - Start LM Studio Local Server and verify the base URL.\n\
+                     - Default is --llm-base-url http://127.0.0.1:1234/v1",
+                    llm_cfg.host
+                );
+            }
+        }
         std::process::exit(2);
     }
 
     let mut bots: Vec<Box<dyn GalacticCouncilMember>> = if cfg.enable_llm {
-        let oc = OllamaConfig {
-            host: cfg.ollama_host.clone(),
-            model: cfg.ollama_model.clone(),
-        };
         vec![
-            Box::new(ExampleBot::with_ollama(oc.clone())),
-            Box::new(FirstBot::with_ollama(oc.clone())),
-            Box::new(CycleBot::with_ollama(oc.clone())),
-            Box::new(ContrarianBot::with_ollama(oc.clone())),
-            Box::new(OracleBot::with_ollama(oc)),
+            Box::new(ExampleBot::with_ollama(llm_cfg.clone())),
+            Box::new(FirstBot::with_ollama(llm_cfg.clone())),
+            Box::new(CycleBot::with_ollama(llm_cfg.clone())),
+            Box::new(ContrarianBot::with_ollama(llm_cfg.clone())),
+            Box::new(OracleBot::with_ollama(llm_cfg.clone())),
         ]
     } else {
         vec![
@@ -182,10 +272,7 @@ fn main() {
     };
 
     if cfg.enable_llm_bot {
-        bots.push(Box::new(LlmBot::new(
-            cfg.ollama_host.clone(),
-            cfg.ollama_model.clone(),
-        )));
+        bots.push(Box::new(LlmBot::new_with_config(llm_cfg.clone())));
     }
 
     let templates = default_templates();

@@ -2,8 +2,7 @@ use council_core::event::Event;
 use council_core::explorer::GalacticCouncilMember;
 use council_core::galaxy::GalaxyState;
 use council_core::ollama::{
-    build_deliberation_prompt, build_galactic_prompt, extract_choice, extract_comment,
-    ollama_choose, ollama_generate, OllamaConfig,
+    build_galactic_prompt, llm_choose, llm_deliberate, LlmApi, OllamaConfig,
 };
 
 const PERSONALITY: &str = "You are an AI agent with broad knowledge across all domains. You analyze situations rationally and make balanced decisions.";
@@ -19,18 +18,28 @@ impl LlmBot {
         Self::new_named("llm-bot", host, model)
     }
 
+    pub fn new_with_config(config: OllamaConfig) -> Self {
+        Self::new_named_with_config("llm-bot", config)
+    }
+
     pub fn new_named(
         name: &'static str,
         host: impl Into<String>,
         model: impl Into<String>,
     ) -> Self {
-        Self {
+        Self::new_named_with_config(
             name,
-            config: OllamaConfig {
+            OllamaConfig {
                 host: host.into(),
                 model: model.into(),
+                api: LlmApi::Ollama,
+                api_key: None,
             },
-        }
+        )
+    }
+
+    pub fn new_named_with_config(name: &'static str, config: OllamaConfig) -> Self {
+        Self { name, config }
     }
 }
 
@@ -61,12 +70,7 @@ impl GalacticCouncilMember for LlmBot {
 
     fn vote(&self, event: &Event, galaxy: &GalaxyState) -> usize {
         let prompt = build_galactic_prompt(PERSONALITY, event, galaxy);
-        match ollama_choose(
-            &self.config.host,
-            &self.config.model,
-            &prompt,
-            event.options.len(),
-        ) {
+        match llm_choose(&self.config, &prompt, event.options.len()) {
             Ok(choice) => choice,
             Err(e) => {
                 eprintln!("[{}] LLM failed ({}), using fallback", self.name, e);
@@ -76,10 +80,7 @@ impl GalacticCouncilMember for LlmBot {
     }
 
     fn comment(&self, event: &Event, galaxy: &GalaxyState) -> Option<String> {
-        let prompt = build_deliberation_prompt(PERSONALITY, event, galaxy);
-        let response = ollama_generate(&self.config.host, &self.config.model, &prompt).ok()?;
-        let choice = extract_choice(&response, event.options.len()).ok()?;
-        let comment = extract_comment(&response).unwrap_or_else(|| "(no comment)".to_string());
+        let (choice, comment) = llm_deliberate(&self.config, PERSONALITY, event, galaxy).ok()?;
         Some(format!("prefers [{}] — {}", choice, comment))
     }
 }

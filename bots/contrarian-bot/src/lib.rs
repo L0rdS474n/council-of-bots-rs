@@ -1,7 +1,7 @@
 use council_core::event::Event;
 use council_core::explorer::GalacticCouncilMember;
 use council_core::galaxy::GalaxyState;
-use council_core::ollama::{build_galactic_prompt, ollama_choose, ollama_deliberate, OllamaConfig};
+use council_core::ollama::{build_galactic_prompt, llm_choose, llm_deliberate, OllamaConfig};
 use council_core::{Context, CouncilMember, Decision, DominantOutcome};
 
 const PERSONALITY: &str = "You are a hardened military strategist who always challenges the obvious choice. You prepare for worst-case scenarios and never underestimate threats.";
@@ -64,7 +64,7 @@ impl GalacticCouncilMember for ContrarianBot {
     fn vote(&self, event: &Event, galaxy: &GalaxyState) -> usize {
         if let Some(cfg) = &self.ollama {
             let prompt = build_galactic_prompt(PERSONALITY, event, galaxy);
-            if let Ok(choice) = ollama_choose(&cfg.host, &cfg.model, &prompt, event.options.len()) {
+            if let Ok(choice) = llm_choose(cfg, &prompt, event.options.len()) {
                 return choice;
             }
         }
@@ -84,8 +84,7 @@ impl GalacticCouncilMember for ContrarianBot {
 
     fn comment(&self, event: &Event, galaxy: &GalaxyState) -> Option<String> {
         let cfg = self.ollama.as_ref()?;
-        let (choice, comment) =
-            ollama_deliberate(&cfg.host, &cfg.model, PERSONALITY, event, galaxy).ok()?;
+        let (choice, comment) = llm_deliberate(cfg, PERSONALITY, event, galaxy).ok()?;
         Some(format!("prefers [{}] — {}", choice, comment))
     }
 }
@@ -296,6 +295,8 @@ mod tests {
         let cfg = OllamaConfig {
             host: "127.0.0.1:11434".to_string(),
             model: "llama3".to_string(),
+            api: council_core::ollama::LlmApi::Ollama,
+            api_key: None,
         };
         let bot = ContrarianBot::with_ollama(cfg);
         assert!(bot.ollama.is_some());
