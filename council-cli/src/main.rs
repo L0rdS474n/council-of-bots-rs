@@ -1,6 +1,7 @@
 use contrarian_bot::ContrarianBot;
 use council_core::explorer::GalacticCouncilMember;
 use council_core::galaxy::GalaxyState;
+use council_core::ollama::OllamaConfig;
 use council_core::scoring::ScoreTracker;
 use council_core::voting::{calculate_vote_weight, resolve_votes, Vote};
 use council_core::{default_templates, generate_event};
@@ -16,6 +17,7 @@ const DEFAULT_ROUNDS: u32 = 25;
 #[derive(Debug, Clone, Default)]
 struct CliConfig {
     rounds: u32,
+    enable_llm: bool,
     enable_llm_bot: bool,
     ollama_host: String,
     ollama_model: String,
@@ -29,6 +31,7 @@ fn parse_args() -> CliConfig {
     //   cargo run -p council-cli -- --enable-llm-bot --spawn-ollama --ollama-host 127.0.0.1:11434 --ollama-model llama3
     let mut cfg = CliConfig {
         rounds: DEFAULT_ROUNDS,
+        enable_llm: false,
         enable_llm_bot: false,
         ollama_host: "127.0.0.1:11434".to_string(),
         ollama_model: "llama3".to_string(),
@@ -51,6 +54,7 @@ fn parse_args() -> CliConfig {
                 }
                 cfg.rounds = rounds;
             }
+            "--enable-llm" => cfg.enable_llm = true,
             "--enable-llm-bot" => cfg.enable_llm_bot = true,
             "--spawn-ollama" => cfg.spawn_ollama = true,
             "--ollama-bin" => {
@@ -70,7 +74,7 @@ fn parse_args() -> CliConfig {
             }
             "--help" | "-h" => {
                 println!(
-                    "council-cli\n\nFlags:\n  --rounds <n> (default 25)\n  --enable-llm-bot\n  --spawn-ollama (start/stop ollama automatically for this run)\n  --ollama-bin <path> (default ollama)\n  --ollama-host <host:port> (default 127.0.0.1:11434)\n  --ollama-model <model> (default llama3)\n"
+                    "council-cli\n\nFlags:\n  --rounds <n>          Number of rounds (default: 25)\n  --enable-llm          Give all 5 bots unique LLM personalities via Ollama\n  --enable-llm-bot      Add a 6th dedicated LLM bot to the council\n  --spawn-ollama        Start/stop Ollama automatically for this run\n  --ollama-bin <path>   Path to ollama binary (default: ollama)\n  --ollama-host <host:port>  Ollama endpoint (default: 127.0.0.1:11434)\n  --ollama-model <model>     LLM model name (default: llama3)\n"
                 );
                 std::process::exit(0);
             }
@@ -157,29 +161,52 @@ fn maybe_spawn_ollama(cfg: &CliConfig) -> Option<OllamaGuard> {
 fn main() {
     let cfg = parse_args();
 
-    let mut bots: Vec<Box<dyn GalacticCouncilMember>> = vec![
-        Box::new(ExampleBot::new()),
-        Box::new(FirstBot::new()),
-        Box::new(CycleBot::new()),
-        Box::new(ContrarianBot::new()),
-        Box::new(OracleBot::new()),
-    ];
+    let needs_ollama = cfg.enable_llm || cfg.enable_llm_bot;
 
-    let _ollama_guard = maybe_spawn_ollama(&cfg);
+    let _ollama_guard = if needs_ollama {
+        maybe_spawn_ollama(&cfg)
+    } else {
+        None
+    };
+
+    if needs_ollama && !can_connect(&cfg.ollama_host) {
+        eprintln!(
+            "LLM mode enabled but Ollama is not reachable at {}.\n\
+             - If you want council-cli to manage Ollama automatically: add --spawn-ollama\n\
+             - Otherwise start it yourself (e.g. `ollama serve`) and ensure the model exists.\n\
+             - You can change the path with --ollama-bin and endpoint with --ollama-host",
+            cfg.ollama_host
+        );
+        std::process::exit(2);
+    }
+
+    let mut bots: Vec<Box<dyn GalacticCouncilMember>> = if cfg.enable_llm {
+        let oc = OllamaConfig {
+            host: cfg.ollama_host.clone(),
+            model: cfg.ollama_model.clone(),
+        };
+        vec![
+            Box::new(ExampleBot::with_ollama(oc.clone())),
+            Box::new(FirstBot::with_ollama(oc.clone())),
+            Box::new(CycleBot::with_ollama(oc.clone())),
+            Box::new(ContrarianBot::with_ollama(oc.clone())),
+            Box::new(OracleBot::with_ollama(oc)),
+        ]
+    } else {
+        vec![
+            Box::new(ExampleBot::new()),
+            Box::new(FirstBot::new()),
+            Box::new(CycleBot::new()),
+            Box::new(ContrarianBot::new()),
+            Box::new(OracleBot::new()),
+        ]
+    };
 
     if cfg.enable_llm_bot {
-        if !can_connect(&cfg.ollama_host) {
-            eprintln!(
-                "llm-bot enabled but Ollama is not reachable at {}.\n\
-                 - If you want council-cli to manage Ollama automatically: add --spawn-ollama\n\
-                 - Otherwise start it yourself (e.g. `ollama serve`) and ensure the model exists.\n\
-                 - You can change the path with --ollama-bin and endpoint with --ollama-host",
-                cfg.ollama_host
-            );
-            std::process::exit(2);
-        }
-
-        bots.push(Box::new(LlmBot::new(cfg.ollama_host, cfg.ollama_model)));
+        bots.push(Box::new(LlmBot::new(
+            cfg.ollama_host.clone(),
+            cfg.ollama_model.clone(),
+        )));
     }
 
     let templates = default_templates();
