@@ -521,6 +521,132 @@ impl EventTemplate for ThreatEmergenceTemplate {
     }
 }
 
+/// Supplies are running low and the council must respond.
+pub struct ResourceScarcityTemplate;
+
+impl EventTemplate for ResourceScarcityTemplate {
+    fn name(&self) -> &'static str {
+        "Resource Scarcity"
+    }
+
+    fn is_applicable(&self, _galaxy: &GalaxyState) -> bool {
+        true
+    }
+
+    fn weight(&self) -> u32 {
+        5
+    }
+
+    fn generate(&self, galaxy: &GalaxyState, rng: &mut dyn RngCore) -> Event {
+        let severity = (rng.next_u32() % 3) + 1;
+
+        let partner = if galaxy.known_species.is_empty() {
+            None
+        } else {
+            Some(&galaxy.known_species[rng.next_u32() as usize % galaxy.known_species.len()].name)
+        };
+
+        let (partner_name, current_relation) = match partner {
+            Some(name) => (
+                Some(name.clone()),
+                galaxy
+                    .relations
+                    .get(name.as_str())
+                    .copied()
+                    .unwrap_or(Relation::Unknown),
+            ),
+            None => (None, Relation::Unknown),
+        };
+
+        let trade_success = partner_name
+            .as_ref()
+            .is_some_and(|_| !matches!(current_relation, Relation::Hostile))
+            && !rng.next_u32().is_multiple_of(4);
+
+        let discovery = format!("Closed-Loop Recycling v{}", severity);
+
+        Event {
+            description: format!(
+                "A critical shortage is developing in fuel and critical materials. Internal forecasts rate it severity {}.",
+                severity
+            ),
+            relevant_expertise: vec![
+                ("engineering".to_string(), 0.4),
+                ("strategy".to_string(), 0.35),
+                ("diplomacy".to_string(), 0.25),
+            ],
+            options: vec![
+                ResponseOption {
+                    description: "Impose rationing and efficiency measures".to_string(),
+                    outcome: Outcome {
+                        description: "Consumption drops and reserves stabilize. Nobody loves it, but it works.".to_string(),
+                        score_delta: 3,
+                        state_changes: vec![],
+                    },
+                },
+                ResponseOption {
+                    description: "Seek emergency trade and resupply agreements".to_string(),
+                    outcome: match partner_name {
+                        None => Outcome {
+                            description: "We have no established contacts to trade with. The council must rely on internal measures.".to_string(),
+                            score_delta: -2,
+                            state_changes: vec![],
+                        },
+                        Some(species) if trade_success => Outcome {
+                            description: format!(
+                                "The {} agree to a resupply deal. Relations improve and the crisis eases.",
+                                species
+                            ),
+                            score_delta: 8,
+                            state_changes: vec![StateChange::SetRelation {
+                                species: species.clone(),
+                                relation: improve_relation(current_relation),
+                            }],
+                        },
+                        Some(species) => Outcome {
+                            description: format!(
+                                "Negotiations with the {} stall. The shortage worsens and trust erodes.",
+                                species
+                            ),
+                            score_delta: -6,
+                            state_changes: vec![StateChange::SetRelation {
+                                species: species.clone(),
+                                relation: degrade_relation(current_relation),
+                            }],
+                        },
+                    },
+                },
+                ResponseOption {
+                    description: "Attempt a rapid engineering breakthrough to replace the missing resources".to_string(),
+                    outcome: if rng.next_u32().is_multiple_of(3) {
+                        Outcome {
+                            description: format!(
+                                "A rushed but successful retrofit delivers {}. The supply crunch is largely mitigated.",
+                                discovery
+                            ),
+                            score_delta: 12,
+                            state_changes: vec![StateChange::AddDiscovery(Discovery {
+                                name: discovery,
+                                category: "engineering".to_string(),
+                            })],
+                        }
+                    } else {
+                        Outcome {
+                            description: "The retrofit program fails and causes cascading shortages. A long-term crisis is now active.".to_string(),
+                            score_delta: -10,
+                            state_changes: vec![StateChange::AddThreat(Threat {
+                                name: "Resource Shortfall".to_string(),
+                                severity,
+                                rounds_active: 0,
+                            })],
+                        }
+                    },
+                },
+            ],
+        }
+    }
+}
+
 // ============================================================================
 // Discovery Templates
 // ============================================================================
@@ -933,6 +1059,7 @@ pub fn default_templates() -> Vec<Box<dyn EventTemplate>> {
         Box::new(AnomalyTemplate),
         Box::new(FirstContactTemplate),
         Box::new(ThreatEmergenceTemplate),
+        Box::new(ResourceScarcityTemplate),
         Box::new(ArtifactTemplate),
         Box::new(DiplomaticRequestTemplate),
         Box::new(CulturalExchangeTemplate),
@@ -1246,6 +1373,42 @@ mod tests {
     }
 
     // ====================================================================
+    // ResourceScarcityTemplate tests
+    // ====================================================================
+
+    #[test]
+    fn resource_scarcity_is_always_applicable() {
+        let template = ResourceScarcityTemplate;
+        let galaxy = GalaxyState::new();
+        assert!(template.is_applicable(&galaxy));
+    }
+
+    #[test]
+    fn resource_scarcity_has_correct_weight() {
+        let template = ResourceScarcityTemplate;
+        assert_eq!(template.weight(), 5);
+    }
+
+    #[test]
+    fn resource_scarcity_generates_three_options_and_last_has_state_change() {
+        let template = ResourceScarcityTemplate;
+        let galaxy = GalaxyState::new();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(2026);
+
+        let event = template.generate(&galaxy, &mut rng);
+        assert_eq!(event.options.len(), 3);
+        assert!(!event.relevant_expertise.is_empty());
+
+        // The engineering option should always either add a discovery or activate a threat.
+        let last = &event.options[2].outcome.state_changes;
+        assert!(
+            last.iter()
+                .any(|c| matches!(c, StateChange::AddDiscovery(_)))
+                || last.iter().any(|c| matches!(c, StateChange::AddThreat(_)))
+        );
+    }
+
+    // ====================================================================
     // TechBreakthroughTemplate tests
     // ====================================================================
 
@@ -1316,9 +1479,10 @@ mod tests {
         let templates = default_templates();
         let names: Vec<&str> = templates.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"Derelict Vessel"));
+        assert!(names.contains(&"Resource Scarcity"));
         assert!(names.contains(&"Diplomatic Request"));
         assert!(names.contains(&"Cultural Exchange"));
         assert!(names.contains(&"Tech Breakthrough"));
-        assert_eq!(templates.len(), 9);
+        assert_eq!(templates.len(), 10);
     }
 }
