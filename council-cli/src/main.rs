@@ -20,6 +20,7 @@ struct CliConfig {
     enable_llm: bool,
     enable_llm_bot: bool,
     deliberate: bool,
+    galnet: bool,
 
     llm_provider: String,
     llm_base_url: String,
@@ -41,6 +42,7 @@ fn parse_args() -> CliConfig {
         enable_llm: false,
         enable_llm_bot: false,
         deliberate: false,
+        galnet: false,
 
         llm_provider: "ollama".to_string(),
         llm_base_url: "http://127.0.0.1:1234/v1".to_string(),
@@ -71,6 +73,7 @@ fn parse_args() -> CliConfig {
             "--enable-llm" => cfg.enable_llm = true,
             "--enable-llm-bot" => cfg.enable_llm_bot = true,
             "--deliberate" => cfg.deliberate = true,
+            "--galnet" => cfg.galnet = true,
             "--llm-provider" => {
                 if let Some(v) = it.next() {
                     cfg.llm_provider = v;
@@ -109,7 +112,7 @@ fn parse_args() -> CliConfig {
             }
             "--help" | "-h" => {
                 println!(
-                    "council-cli\n\nFlags:\n  --rounds <n>          Number of rounds (default: 25)\n  --enable-llm          Give all 5 bots unique LLM personalities via a local LLM\n  --enable-llm-bot      Add a 6th dedicated LLM bot to the council\n  --deliberate          Let bots publish short comments before the final vote\n\n  --llm-provider <ollama|lmstudio>  Which local LLM API to use (default: ollama)\n  --llm-base-url <url>   LM Studio base URL (default: http://127.0.0.1:1234/v1)\n  --llm-model <model>    LM Studio model id (defaults to --ollama-model if unset)\n  --llm-api-key <key>    Optional API key (LM Studio often accepts any value)\n\n  --spawn-ollama        Start/stop Ollama automatically for this run (ollama only)\n  --ollama-bin <path>   Path to ollama binary (default: ollama)\n  --ollama-host <host:port>  Ollama endpoint (default: 127.0.0.1:11434)\n  --ollama-model <model>     Model name (default: llama3)\n"
+                    "council-cli\n\nFlags:\n  --rounds <n>          Number of rounds (default: 25)\n  --enable-llm          Give all 5 bots unique LLM personalities via a local LLM\n  --enable-llm-bot      Add a 6th dedicated LLM bot to the council\n  --deliberate          Let bots publish short comments before the final vote\n  --galnet             Add small GalNet news blurbs each round (for fun)\n\n  --llm-provider <ollama|lmstudio>  Which local LLM API to use (default: ollama)\n  --llm-base-url <url>   LM Studio base URL (default: http://127.0.0.1:1234/v1)\n  --llm-model <model>    LM Studio model id (defaults to --ollama-model if unset)\n  --llm-api-key <key>    Optional API key (LM Studio often accepts any value)\n\n  --spawn-ollama        Start/stop Ollama automatically for this run (ollama only)\n  --ollama-bin <path>   Path to ollama binary (default: ollama)\n  --ollama-host <host:port>  Ollama endpoint (default: 127.0.0.1:11434)\n  --ollama-model <model>     Model name (default: llama3)\n"
                 );
                 std::process::exit(0);
             }
@@ -375,6 +378,21 @@ fn main() {
             score.add(round, threat_penalty, "Unresolved threats");
         }
 
+        if cfg.galnet {
+            println!();
+            println!(
+                "  [GALNET] {}",
+                galnet_blurb(
+                    round,
+                    winner,
+                    outcome.score_delta,
+                    score.total,
+                    galaxy.threats.len(),
+                    galaxy.discoveries.len(),
+                )
+            );
+        }
+
         // Status line
         println!();
         println!(
@@ -388,6 +406,45 @@ fn main() {
     }
 
     print_final_report(&galaxy, &score, &bots);
+}
+
+fn galnet_blurb(
+    round: u32,
+    winner: usize,
+    score_delta: i32,
+    total_score: i32,
+    threats: usize,
+    discoveries: usize,
+) -> String {
+    const BLURBS: &[&str] = &[
+        "Markets rally; analysts pretend this was always the plan.",
+        "Eyewitnesses report the Council looked confident. This may be a hallucination.",
+        "Diplomats applaud politely while checking the nearest exit.",
+        "A spokesperson clarifies: 'No, this is not a coup. It's a feature update.'",
+        "Galactic weather: 0% chance of peace, 100% chance of paperwork.",
+        "Citizen morale rises sharply, then remembers the tax code.",
+        "Historians mark this as 'a decision'. The bar is low.",
+        "A rogue AI claims credit. The Council denies everything, repeatedly.",
+        "Breaking: nobody understands the plan, but everyone is nodding.",
+    ];
+
+    let idx = ((round as usize)
+        .wrapping_mul(31)
+        .wrapping_add(winner.wrapping_mul(7))
+        .wrapping_add(threats.wrapping_mul(13))
+        .wrapping_add(discoveries.wrapping_mul(5)))
+        % BLURBS.len();
+
+    let mood = match score_delta {
+        d if d > 0 => "WIN",
+        d if d < 0 => "OUCH",
+        _ => "MEH",
+    };
+
+    format!(
+        "Round {} [{}] ({:+} pts, total {}): {} Threats={}, Discoveries={}",
+        round, mood, score_delta, total_score, BLURBS[idx], threats, discoveries
+    )
 }
 
 fn print_banner(rounds: u32, members: u32) {
