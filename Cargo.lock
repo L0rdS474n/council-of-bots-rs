@@ -27,6 +27,8 @@ dependencies = [
  "llm-bot",
  "oracle-bot",
  "rand",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

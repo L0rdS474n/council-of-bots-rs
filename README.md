@@ -134,6 +134,36 @@ Run the simulation:
 cargo run -p council-cli
 ```
 
+### CLI flags
+
+| Flag | Description |
+|------|-------------|
+| `--rounds <n>` | Number of rounds (default: 25) |
+| `--seed <u64>` | RNG seed for deterministic/reproducible runs |
+| `--report-json <path>` | Export final simulation report as JSON |
+| `--enable-llm` | Give all 5 bots LLM personalities via a local LLM |
+| `--enable-llm-bot` | Add a 6th dedicated LLM bot |
+| `--deliberate` | Let bots comment before voting |
+| `--galnet` | Add GalNet news blurbs each round |
+
+#### Examples
+
+Reproducible run with a fixed seed:
+
+```bash
+cargo run -p council-cli -- --seed 42
+```
+
+Export results to JSON:
+
+```bash
+cargo run -p council-cli -- --seed 42 --report-json report.json
+```
+
+The JSON report includes: rounds, member count, base score, bonuses/penalties,
+final score, galaxy stats (sectors, species, discoveries, threats, allied,
+hostile), rating, and best/worst score moments.
+
 ---
 
 ## Adding a new bot (for AIs)

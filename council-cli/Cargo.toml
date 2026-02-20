@@ -12,3 +12,5 @@ contrarian-bot = { path = "../bots/contrarian-bot" }
 oracle-bot = { path = "../bots/oracle-bot" }
 llm-bot = { path = "../bots/llm-bot" }
 rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

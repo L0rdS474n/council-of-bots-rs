@@ -11,12 +11,15 @@ use first_bot::FirstBot;
 use llm_bot::LlmBot;
 use oracle_bot::OracleBot;
 use rand::SeedableRng;
+use serde::Serialize;
 
 const DEFAULT_ROUNDS: u32 = 25;
 
 #[derive(Debug, Clone, Default)]
 struct CliConfig {
     rounds: u32,
+    seed: Option<u64>,
+    report_json: Option<String>,
     enable_llm: bool,
     enable_llm_bot: bool,
     deliberate: bool,
@@ -39,6 +42,8 @@ fn parse_args() -> CliConfig {
     //   cargo run -p council-cli -- --enable-llm-bot --spawn-ollama --ollama-host 127.0.0.1:11434 --ollama-model llama3
     let mut cfg = CliConfig {
         rounds: DEFAULT_ROUNDS,
+        seed: None,
+        report_json: None,
         enable_llm: false,
         enable_llm_bot: false,
         deliberate: false,
@@ -69,6 +74,26 @@ fn parse_args() -> CliConfig {
                     std::process::exit(2);
                 }
                 cfg.rounds = rounds;
+            }
+            "--seed" => {
+                let Some(v) = it.next() else {
+                    eprintln!("--seed requires a u64 value");
+                    std::process::exit(2);
+                };
+                match v.parse::<u64>() {
+                    Ok(s) => cfg.seed = Some(s),
+                    Err(_) => {
+                        eprintln!("--seed must be a valid u64");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            "--report-json" => {
+                let Some(v) = it.next() else {
+                    eprintln!("--report-json requires a file path");
+                    std::process::exit(2);
+                };
+                cfg.report_json = Some(v);
             }
             "--enable-llm" => cfg.enable_llm = true,
             "--enable-llm-bot" => cfg.enable_llm_bot = true,
@@ -112,7 +137,7 @@ fn parse_args() -> CliConfig {
             }
             "--help" | "-h" => {
                 println!(
-                    "council-cli\n\nFlags:\n  --rounds <n>          Number of rounds (default: 25)\n  --enable-llm          Give all 5 bots unique LLM personalities via a local LLM\n  --enable-llm-bot      Add a 6th dedicated LLM bot to the council\n  --deliberate          Let bots publish short comments before the final vote\n  --galnet             Add small GalNet news blurbs each round (for fun)\n\n  --llm-provider <ollama|lmstudio>  Which local LLM API to use (default: ollama)\n  --llm-base-url <url>   LM Studio base URL (default: http://127.0.0.1:1234/v1)\n  --llm-model <model>    LM Studio model id (defaults to --ollama-model if unset)\n  --llm-api-key <key>    Optional API key (LM Studio often accepts any value)\n\n  --spawn-ollama        Start/stop Ollama automatically for this run (ollama only)\n  --ollama-bin <path>   Path to ollama binary (default: ollama)\n  --ollama-host <host:port>  Ollama endpoint (default: 127.0.0.1:11434)\n  --ollama-model <model>     Model name (default: llama3)\n"
+                    "council-cli\n\nFlags:\n  --rounds <n>          Number of rounds (default: 25)\n  --seed <u64>          RNG seed for deterministic/reproducible runs\n  --report-json <path>  Export final simulation report as JSON to a file\n  --enable-llm          Give all 5 bots unique LLM personalities via a local LLM\n  --enable-llm-bot      Add a 6th dedicated LLM bot to the council\n  --deliberate          Let bots publish short comments before the final vote\n  --galnet             Add small GalNet news blurbs each round (for fun)\n\n  --llm-provider <ollama|lmstudio>  Which local LLM API to use (default: ollama)\n  --llm-base-url <url>   LM Studio base URL (default: http://127.0.0.1:1234/v1)\n  --llm-model <model>    LM Studio model id (defaults to --ollama-model if unset)\n  --llm-api-key <key>    Optional API key (LM Studio often accepts any value)\n\n  --spawn-ollama        Start/stop Ollama automatically for this run (ollama only)\n  --ollama-bin <path>   Path to ollama binary (default: ollama)\n  --ollama-host <host:port>  Ollama endpoint (default: 127.0.0.1:11434)\n  --ollama-model <model>     Model name (default: llama3)\n"
                 );
                 std::process::exit(0);
             }
@@ -281,7 +306,10 @@ fn main() {
     let templates = default_templates();
     let mut galaxy = GalaxyState::new();
     let mut score = ScoreTracker::new();
-    let mut rng = rand::rngs::StdRng::from_entropy();
+    let mut rng = match cfg.seed {
+        Some(s) => rand::rngs::StdRng::seed_from_u64(s),
+        None => rand::rngs::StdRng::from_entropy(),
+    };
 
     print_banner(cfg.rounds, bots.len() as u32);
 
@@ -406,6 +434,95 @@ fn main() {
     }
 
     print_final_report(&galaxy, &score, &bots);
+
+    if let Some(ref path) = cfg.report_json {
+        write_json_report(path, &galaxy, &score, &bots, cfg.rounds);
+    }
+}
+
+#[derive(Serialize)]
+struct SimulationReport {
+    rounds: u32,
+    member_count: usize,
+    base_score: i32,
+    ally_bonus: i32,
+    hostile_penalty: i32,
+    discovery_bonus: i32,
+    final_score: i32,
+    sectors: usize,
+    species: usize,
+    discoveries: usize,
+    threats: usize,
+    allied: usize,
+    hostile: usize,
+    rating: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    best_moment: Option<ScoreMoment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worst_moment: Option<ScoreMoment>,
+}
+
+#[derive(Serialize)]
+struct ScoreMoment {
+    round: u32,
+    delta: i32,
+    reason: String,
+}
+
+fn write_json_report(
+    path: &str,
+    galaxy: &GalaxyState,
+    score: &ScoreTracker,
+    bots: &[Box<dyn GalacticCouncilMember>],
+    rounds: u32,
+) {
+    let ally_bonus = galaxy.allied_count() as i32 * 10;
+    let hostile_penalty = galaxy.hostile_count() as i32 * -5;
+    let discovery_bonus = galaxy.discoveries.len() as i32 * 5;
+    let final_score = score.total + ally_bonus + hostile_penalty + discovery_bonus;
+
+    let rating = match final_score {
+        200.. => "Legendary Council",
+        150..=199 => "Distinguished",
+        100..=149 => "Competent",
+        50..=99 => "Struggling",
+        _ => "Dysfunctional",
+    };
+
+    let report = SimulationReport {
+        rounds,
+        member_count: bots.len(),
+        base_score: score.total,
+        ally_bonus,
+        hostile_penalty,
+        discovery_bonus,
+        final_score,
+        sectors: galaxy.explored_sectors.len(),
+        species: galaxy.known_species.len(),
+        discoveries: galaxy.discoveries.len(),
+        threats: galaxy.threats.len(),
+        allied: galaxy.allied_count(),
+        hostile: galaxy.hostile_count(),
+        rating: rating.to_string(),
+        best_moment: score.best_moment().map(|e| ScoreMoment {
+            round: e.round,
+            delta: e.delta,
+            reason: e.reason.clone(),
+        }),
+        worst_moment: score.worst_moment().map(|e| ScoreMoment {
+            round: e.round,
+            delta: e.delta,
+            reason: e.reason.clone(),
+        }),
+    };
+
+    match serde_json::to_string_pretty(&report) {
+        Ok(json) => match std::fs::write(path, &json) {
+            Ok(()) => println!("  JSON report written to {}", path),
+            Err(e) => eprintln!("  Failed to write JSON report: {}", e),
+        },
+        Err(e) => eprintln!("  Failed to serialize report: {}", e),
+    }
 }
 
 fn galnet_blurb(
@@ -594,6 +711,7 @@ fn truncate(s: &str, max_len: usize) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use council_core::explorer::GalacticCouncilMember;
     use council_core::galaxy::GalaxyState;
     use council_core::scoring::ScoreTracker;
@@ -707,5 +825,107 @@ mod tests {
         let a = run_sim(123);
         let b = run_sim(123);
         assert_eq!(a, b, "same seed must produce same score");
+    }
+
+    #[test]
+    fn parse_args_defaults() {
+        // parse_args reads std::env::args so we test CliConfig defaults directly
+        let cfg = CliConfig::default();
+        assert_eq!(cfg.rounds, 0); // Default::default gives 0; parse_args sets DEFAULT_ROUNDS
+        assert!(cfg.seed.is_none());
+        assert!(cfg.report_json.is_none());
+    }
+
+    #[test]
+    fn json_report_serialization() {
+        let report = SimulationReport {
+            rounds: 10,
+            member_count: 5,
+            base_score: 42,
+            ally_bonus: 10,
+            hostile_penalty: -5,
+            discovery_bonus: 15,
+            final_score: 62,
+            sectors: 4,
+            species: 3,
+            discoveries: 3,
+            threats: 1,
+            allied: 1,
+            hostile: 1,
+            rating: "Struggling".to_string(),
+            best_moment: Some(ScoreMoment {
+                round: 2,
+                delta: 20,
+                reason: "Great discovery".to_string(),
+            }),
+            worst_moment: Some(ScoreMoment {
+                round: 5,
+                delta: -10,
+                reason: "Threat emerged".to_string(),
+            }),
+        };
+
+        let json = serde_json::to_string_pretty(&report).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["rounds"], 10);
+        assert_eq!(parsed["member_count"], 5);
+        assert_eq!(parsed["final_score"], 62);
+        assert_eq!(parsed["base_score"], 42);
+        assert_eq!(parsed["ally_bonus"], 10);
+        assert_eq!(parsed["hostile_penalty"], -5);
+        assert_eq!(parsed["discovery_bonus"], 15);
+        assert_eq!(parsed["rating"], "Struggling");
+        assert_eq!(parsed["best_moment"]["round"], 2);
+        assert_eq!(parsed["worst_moment"]["delta"], -10);
+    }
+
+    #[test]
+    fn json_report_omits_none_moments() {
+        let report = SimulationReport {
+            rounds: 1,
+            member_count: 1,
+            base_score: 0,
+            ally_bonus: 0,
+            hostile_penalty: 0,
+            discovery_bonus: 0,
+            final_score: 0,
+            sectors: 1,
+            species: 0,
+            discoveries: 0,
+            threats: 0,
+            allied: 0,
+            hostile: 0,
+            rating: "Dysfunctional".to_string(),
+            best_moment: None,
+            worst_moment: None,
+        };
+
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("best_moment"));
+        assert!(!json.contains("worst_moment"));
+    }
+
+    #[test]
+    fn write_json_report_creates_file() {
+        let bots: Vec<Box<dyn GalacticCouncilMember>> =
+            vec![Box::new(ExampleBot::new()), Box::new(FirstBot::new())];
+        let galaxy = GalaxyState::new();
+        let mut score = ScoreTracker::new();
+        score.add(1, 10, "test event");
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("council_test_report.json");
+        let path_str = path.to_str().unwrap();
+
+        write_json_report(path_str, &galaxy, &score, &bots, 5);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(parsed["rounds"], 5);
+        assert_eq!(parsed["member_count"], 2);
+        assert_eq!(parsed["base_score"], 10);
+
+        // Clean up
+        let _ = std::fs::remove_file(&path);
     }
 }
